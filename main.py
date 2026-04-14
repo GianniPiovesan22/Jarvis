@@ -259,27 +259,34 @@ class JarvisEngine:
             logger.debug("JarvisEngine: event loop closed")
 
     async def _main_loop(self) -> None:
-        """Wake word detection loop — calls _on_wake_word when triggered."""
-        logger.info("JarvisEngine: starting wake word detection")
+        """Main engine loop — wake word is optional, SIGUSR1 (Super+J) is primary."""
         self._emit_state("idle")
 
-        def _wake_callback() -> None:
-            """Called from the wake word detector thread on detection."""
-            if self._processing.is_set():
-                logger.debug("JarvisEngine: ignoring wake word — already processing")
-                return
-            if self._loop is not None:
-                self._loop.call_soon_threadsafe(
-                    lambda: asyncio.ensure_future(self._handle_wake_word())
-                )
+        # Try wake word — if it fails, continue without it (SIGUSR1 still works)
+        if self._wake_word is not None:
+            try:
+                def _wake_callback() -> None:
+                    if self._processing.is_set():
+                        return
+                    if self._loop is not None:
+                        self._loop.call_soon_threadsafe(
+                            lambda: asyncio.ensure_future(self._handle_wake_word())
+                        )
 
-        await self._wake_word.start_listening(_wake_callback)
+                await self._wake_word.start_listening(_wake_callback)
+                logger.info("JarvisEngine: wake word active + SIGUSR1 hotkey ready")
+            except Exception:
+                logger.warning("JarvisEngine: wake word failed to start — using SIGUSR1 (Super+J) only")
+                self._wake_word = None
+        else:
+            logger.info("JarvisEngine: no wake word — using SIGUSR1 (Super+J) only")
 
         # Keep the loop alive until stop is requested
         while not self._stop_event.is_set():
             await asyncio.sleep(0.1)
 
-        self._wake_word.stop()
+        if self._wake_word is not None:
+            self._wake_word.stop()
 
     async def _handle_wake_word(self) -> None:
         """Full pipeline: capture → STT → LLM → TTS → reset to idle."""

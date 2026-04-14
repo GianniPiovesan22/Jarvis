@@ -949,27 +949,47 @@ class JarvisOverlay(QWidget):
         self.response_ready.emit(text)
 
     def show_overlay(self) -> None:
-        """Animate the overlay appearing (slide up from bottom)."""
+        """Show the overlay and position it bottom-right via hyprctl."""
         if not self.isVisible():
             self.show()
+            # Position via hyprctl after window is mapped
+            QTimer.singleShot(200, self._position_bottom_right)
 
-            # Slide-up animation via geometry
-            screen = QApplication.primaryScreen()
-            if screen:
-                geom = screen.availableGeometry()
-                end_y = self.y()
-                start_y = geom.bottom() + 20
+    def _position_bottom_right(self) -> None:
+        """Use hyprctl to move the overlay to bottom-right corner."""
+        import json
+        import subprocess
 
-                # Temporarily move below screen
-                self.move(self.x(), start_y)
-                self.show()
+        try:
+            r = subprocess.run(
+                ["hyprctl", "clients", "-j"],
+                capture_output=True, text=True, timeout=2,
+            )
+            clients = json.loads(r.stdout)
+            mr = subprocess.run(
+                ["hyprctl", "monitors", "-j"],
+                capture_output=True, text=True, timeout=2,
+            )
+            mons = json.loads(mr.stdout)
+            sw, sh = mons[0]["width"], mons[0]["height"]
 
-                self._slide_anim = QPropertyAnimation(self, b"pos")
-                self._slide_anim.setDuration(500)
-                self._slide_anim.setStartValue(QPoint(self.x(), start_y))
-                self._slide_anim.setEndValue(QPoint(self.x(), end_y))
-                self._slide_anim.setEasingCurve(QEasingCurve.Type.OutCubic)
-                self._slide_anim.start()
+            for c in clients:
+                if c.get("class") == "jarvis-overlay":
+                    addr = c["address"]
+                    w, h = c.get("size", [240, 238])
+                    tx, ty = sw - w - 28, sh - h - 28
+                    a = f"address:{addr}"
+
+                    for cmd in [
+                        ["hyprctl", "dispatch", "setfloating", a],
+                        ["hyprctl", "dispatch", "movewindowpixel", f"exact {tx} {ty},{a}"],
+                    ]:
+                        subprocess.run(cmd, capture_output=True, timeout=2)
+
+                    logger.debug("Overlay positioned at ({}, {})", tx, ty)
+                    return
+        except Exception:
+            logger.warning("Failed to position overlay via hyprctl")
 
     def hide_overlay(self) -> None:
         """Animate the overlay disappearing (slide down)."""
