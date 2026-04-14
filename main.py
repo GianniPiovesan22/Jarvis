@@ -260,6 +260,7 @@ class JarvisEngine:
         if self._processing.is_set():
             return
         self._processing.set()
+        self._wake_word.pause()  # stop listening while we process
 
         try:
             # ---- 1. Listening: capture audio ----
@@ -333,6 +334,7 @@ class JarvisEngine:
 
         finally:
             self._processing.clear()
+            self._wake_word.resume()  # resume listening for next wake word
 
     # ------------------------------------------------------------------
     # Helpers
