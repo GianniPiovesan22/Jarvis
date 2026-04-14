@@ -2,14 +2,21 @@
 JARVIS — Entry point.
 
 Wires all components together and runs the main interaction loop.
-Currently runs in text-input mode (wake word + audio pipeline are stubs).
-Use --force-local / --force-claude / --force-gemini to override routing.
+
+Supports TWO modes:
+  - Voice mode (default): wake word → audio → STT → LLM → TTS + UI overlay
+  - Text mode (--no-ui / --text-mode): text input loop, no audio, no UI
+
+Use --force-local / --force-claude / --force-gemini to override LLM routing.
 """
 
 from __future__ import annotations
 
 import argparse
 import asyncio
+import signal
+import sys
+import threading
 import uuid
 from typing import Any
 
@@ -27,7 +34,7 @@ from tools import TOOL_REGISTRY, TOOL_SCHEMAS
 
 
 # ---------------------------------------------------------------------------
-# Interaction handler
+# Interaction handler (shared by both modes)
 # ---------------------------------------------------------------------------
 
 
@@ -105,22 +112,397 @@ async def handle_interaction(
 
 
 # ---------------------------------------------------------------------------
+# JarvisEngine — async pipeline in background thread, emits Qt signals
+# ---------------------------------------------------------------------------
+
+
+def _try_import_pyqt6() -> bool:
+    """Return True if PyQt6 is available."""
+    try:
+        import PyQt6.QtCore  # noqa: F401
+        return True
+    except ImportError:
+        return False
+
+
+def _try_import_audio_deps() -> bool:
+    """Return True if all audio deps (sounddevice, numpy) are available."""
+    try:
+        import sounddevice  # noqa: F401
+        import numpy  # noqa: F401
+        return True
+    except ImportError:
+        return False
+
+
+class JarvisEngine:
+    """Runs the async voice pipeline in a background thread.
+
+    Communicates with the Qt UI via signal callbacks registered at init time.
+    Using plain callables (not QObject/pyqtSignal) keeps this class importable
+    even when PyQt6 is not installed.
+
+    Callbacks are invoked from the background asyncio thread — the caller is
+    responsible for thread-safe dispatch (Qt signals handle this automatically
+    when connected to overlay slots).
+    """
+
+    def __init__(
+        self,
+        config: Any,
+        router: LLMRouter,
+        llm_map: dict[str, LLMProvider],
+        dispatcher: ToolDispatcher,
+        tts: Any,
+        stt: Any,
+        audio_capture: Any,
+        wake_word: Any,
+        memory: MemoryDB,
+        session_id: str,
+        force_target: RouteTarget | None,
+        *,
+        on_state_changed: Any = None,       # callable(str)
+        on_transcription: Any = None,       # callable(str)
+        on_response: Any = None,            # callable(str)
+    ) -> None:
+        self._config = config
+        self._router = router
+        self._llm_map = llm_map
+        self._dispatcher = dispatcher
+        self._tts = tts
+        self._stt = stt
+        self._audio_capture = audio_capture
+        self._wake_word = wake_word
+        self._memory = memory
+        self._session_id = session_id
+        self._force_target = force_target
+
+        # UI callbacks (may be None in headless mode)
+        self._on_state_changed = on_state_changed
+        self._on_transcription = on_transcription
+        self._on_response = on_response
+
+        self._thread: threading.Thread | None = None
+        self._loop: asyncio.AbstractEventLoop | None = None
+        self._stop_event = threading.Event()
+
+        # Gate: only process one wake word at a time
+        self._processing = threading.Event()
+
+    # ------------------------------------------------------------------
+    # Public API
+    # ------------------------------------------------------------------
+
+    def start(self) -> None:
+        """Start the async pipeline loop in a background daemon thread."""
+        self._thread = threading.Thread(
+            target=self._run_loop,
+            name="jarvis-engine",
+            daemon=True,
+        )
+        self._thread.start()
+        logger.info("JarvisEngine started in background thread")
+
+    def stop(self) -> None:
+        """Signal the engine to stop and wait for the thread to exit."""
+        self._stop_event.set()
+        if self._wake_word is not None:
+            self._wake_word.stop()
+        if self._loop is not None and self._loop.is_running():
+            self._loop.call_soon_threadsafe(self._loop.stop)
+        if self._thread is not None:
+            self._thread.join(timeout=5.0)
+            self._thread = None
+        logger.info("JarvisEngine stopped")
+
+    # ------------------------------------------------------------------
+    # Internal — background thread entry point
+    # ------------------------------------------------------------------
+
+    def _run_loop(self) -> None:
+        """Entry point for the background thread — owns its asyncio event loop."""
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        self._loop = loop
+        try:
+            loop.run_until_complete(self._main_loop())
+        except Exception:
+            logger.exception("JarvisEngine: unhandled exception in main loop")
+        finally:
+            loop.close()
+            logger.debug("JarvisEngine: event loop closed")
+
+    async def _main_loop(self) -> None:
+        """Wake word detection loop — calls _on_wake_word when triggered."""
+        logger.info("JarvisEngine: starting wake word detection")
+        self._emit_state("idle")
+
+        def _wake_callback() -> None:
+            """Called from the wake word detector thread on detection."""
+            if self._processing.is_set():
+                logger.debug("JarvisEngine: ignoring wake word — already processing")
+                return
+            if self._loop is not None:
+                self._loop.call_soon_threadsafe(
+                    lambda: asyncio.ensure_future(self._handle_wake_word())
+                )
+
+        await self._wake_word.start_listening(_wake_callback)
+
+        # Keep the loop alive until stop is requested
+        while not self._stop_event.is_set():
+            await asyncio.sleep(0.1)
+
+        self._wake_word.stop()
+
+    async def _handle_wake_word(self) -> None:
+        """Full pipeline: capture → STT → LLM → TTS → reset to idle."""
+        if self._processing.is_set():
+            return
+        self._processing.set()
+
+        try:
+            # ---- 1. Listening: capture audio ----
+            logger.info("Wake word detected — starting audio capture")
+            self._emit_state("listening")
+
+            try:
+                audio: bytes = await self._audio_capture.capture_until_silence()
+            except Exception:
+                logger.exception("JarvisEngine: audio capture failed")
+                self._emit_state("error")
+                await asyncio.sleep(2.0)
+                self._emit_state("idle")
+                return
+
+            # ---- 2. Processing: STT ----
+            self._emit_state("processing")
+
+            try:
+                text: str = await self._stt.transcribe(audio)
+            except Exception:
+                logger.exception("JarvisEngine: STT transcription failed")
+                self._emit_state("error")
+                await asyncio.sleep(2.0)
+                self._emit_state("idle")
+                return
+
+            if not text.strip():
+                logger.info("JarvisEngine: empty transcription, returning to idle")
+                self._emit_state("idle")
+                return
+
+            logger.info("JarvisEngine: transcribed → {!r}", text)
+            if self._on_transcription:
+                self._on_transcription(text)
+
+            # ---- 3. LLM + tools ----
+            try:
+                response = await handle_interaction(
+                    text,
+                    self._router,
+                    self._llm_map,
+                    self._dispatcher,
+                    # Pass a no-op TTS here — we handle TTS ourselves below
+                    # so we control timing and UI state transitions
+                    _NoOpTTS(),
+                    self._memory,
+                    self._session_id,
+                    self._force_target,
+                )
+            except Exception:
+                logger.exception("JarvisEngine: LLM interaction failed")
+                self._emit_state("error")
+                await asyncio.sleep(2.0)
+                self._emit_state("idle")
+                return
+
+            # ---- 4. Speaking: TTS ----
+            self._emit_state("speaking")
+            if self._on_response:
+                self._on_response(response.text)
+
+            try:
+                await self._tts.speak(response.text)
+            except (NotImplementedError, Exception):
+                logger.warning("JarvisEngine: TTS speak failed or not implemented")
+
+            # ---- 5. Auto-hide after 5 seconds ----
+            await asyncio.sleep(5.0)
+            self._emit_state("idle")
+
+        finally:
+            self._processing.clear()
+
+    # ------------------------------------------------------------------
+    # Helpers
+    # ------------------------------------------------------------------
+
+    def _emit_state(self, state: str) -> None:
+        logger.debug("JarvisEngine: state → {}", state)
+        if self._on_state_changed:
+            self._on_state_changed(state)
+
+
+class _NoOpTTS:
+    """Drop-in TTS that does nothing — used to skip TTS inside handle_interaction."""
+
+    async def speak(self, text: str) -> None:  # noqa: ARG002
+        pass
+
+
+# ---------------------------------------------------------------------------
+# Voice mode bootstrap
+# ---------------------------------------------------------------------------
+
+
+def _init_audio_components(config: Any) -> tuple[Any, Any, Any, Any]:
+    """Try to initialize wake word, audio capture, STT, and TTS.
+
+    Returns (wake_word, audio_capture, stt, tts) — or raises on failure.
+    Any ImportError from missing deps propagates to the caller.
+    """
+    from core.audio_capture import AudioCapture
+    from core.stt import STTEngine
+    from core.tts import TTSEngine
+    from core.wake_word import WakeWordDetector
+
+    wake_word = WakeWordDetector(config.wake_word)
+    audio_capture = AudioCapture()
+    stt = STTEngine(config.whisper)
+    tts = TTSEngine(config.tts)
+    return wake_word, audio_capture, stt, tts
+
+
+def _run_voice_mode(
+    config: Any,
+    router: LLMRouter,
+    llm_map: dict[str, LLMProvider],
+    dispatcher: ToolDispatcher,
+    memory: MemoryDB,
+    session_id: str,
+    force_target: RouteTarget | None,
+) -> None:
+    """Bootstrap and run full voice + UI mode. Blocks until quit."""
+    from PyQt6.QtWidgets import QApplication
+
+    from ui.overlay import JarvisOverlay
+    from ui.tray import SystemTray
+
+    # Must create QApplication before any other Qt objects
+    app = QApplication(sys.argv)
+    app.setApplicationName("Jarvis")
+    app.setQuitOnLastWindowClosed(False)  # keep alive when overlay is hidden
+
+    overlay = JarvisOverlay(config.ui)
+    overlay.show_overlay()
+
+    tray = SystemTray(overlay)
+    tray.show()
+
+    # Wire engine signals → overlay (thread-safe: overlay.set_state emits
+    # internal Qt signals via pyqtSignal, which crosses threads safely)
+    wake_word, audio_capture, stt, tts = _init_audio_components(config)
+
+    engine = JarvisEngine(
+        config=config,
+        router=router,
+        llm_map=llm_map,
+        dispatcher=dispatcher,
+        tts=tts,
+        stt=stt,
+        audio_capture=audio_capture,
+        wake_word=wake_word,
+        memory=memory,
+        session_id=session_id,
+        force_target=force_target,
+        on_state_changed=lambda s: (overlay.set_state(s), tray.update_state(s)),
+        on_transcription=overlay.show_transcription,
+        on_response=overlay.show_response,
+    )
+
+    # Handle Ctrl+C cleanly: stop engine then quit Qt
+    def _handle_sigint(*_: Any) -> None:
+        logger.info("SIGINT received — shutting down")
+        engine.stop()
+        app.quit()
+
+    signal.signal(signal.SIGINT, _handle_sigint)
+
+    engine.start()
+
+    logger.info("Jarvis voice mode running — waiting for wake word")
+    exit_code = app.exec()
+    engine.stop()
+    sys.exit(exit_code)
+
+
+# ---------------------------------------------------------------------------
+# Text mode
+# ---------------------------------------------------------------------------
+
+
+async def _text_loop(
+    router: LLMRouter,
+    llm_map: dict[str, LLMProvider],
+    dispatcher: ToolDispatcher,
+    tts: Any,
+    memory: MemoryDB,
+    session_id: str,
+    force_target: RouteTarget | None,
+) -> None:
+    """Classic text-input interaction loop (no audio, no UI)."""
+    print("JARVIS v1.0 — Escribí tu comando (o 'salir' para terminar)")
+    print(
+        f"Modo: {'forzado → ' + force_target if force_target else 'router automático'}"
+    )
+    print()
+
+    while True:
+        try:
+            text: str = await asyncio.to_thread(input, ">>> ")
+        except (EOFError, KeyboardInterrupt):
+            break
+
+        text = text.strip()
+        if not text or text.lower() in ("salir", "exit", "quit"):
+            break
+
+        response = await handle_interaction(
+            text,
+            router,
+            llm_map,
+            dispatcher,
+            tts,
+            memory,
+            session_id,
+            force_target,
+        )
+        print(f"\nJARVIS: {response.text}\n")
+
+    logger.info("Jarvis shutting down")
+
+
+# ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
 
 
 async def main() -> None:
-    """Initialize all components and run the main text interaction loop."""
+    """Parse args, init shared components, then branch to voice or text mode."""
     parser = argparse.ArgumentParser(
         description="JARVIS — Asistente de IA Local",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=(
             "Ejemplos:\n"
-            "  python main.py                    # modo automático\n"
-            "  python main.py --force-local       # todo a Ollama\n"
-            "  python main.py --force-claude      # todo a claude-sonnet\n"
-            "  python main.py --force-gemini      # todo a gemini-flash\n"
-            "  python main.py --no-ui             # sin interfaz gráfica\n"
+            "  python main.py                    # modo voz completo\n"
+            "  python main.py --no-ui            # modo texto headless\n"
+            "  python main.py --text-mode        # alias de --no-ui\n"
+            "  python main.py --force-local      # todo a Ollama\n"
+            "  python main.py --force-claude     # todo a claude-sonnet\n"
+            "  python main.py --force-gemini     # todo a gemini-flash\n"
+            "  python main.py --test-tts 'Hola'  # probar TTS y salir\n"
+            "  python main.py --test-stt         # probar STT y salir\n"
         ),
     )
     parser.add_argument(
@@ -141,7 +523,12 @@ async def main() -> None:
     parser.add_argument(
         "--no-ui",
         action="store_true",
-        help="Ejecutar en modo headless (sin overlay PyQt6)",
+        help="Ejecutar en modo texto headless (sin overlay PyQt6)",
+    )
+    parser.add_argument(
+        "--text-mode",
+        action="store_true",
+        help="Alias de --no-ui — forzar modo texto",
     )
     parser.add_argument(
         "--test-tts",
@@ -161,7 +548,7 @@ async def main() -> None:
     )
     args = parser.parse_args()
 
-    # Resolve force target
+    # Resolve LLM force target
     force_target: RouteTarget | None = None
     if args.force_local:
         force_target = "local"
@@ -173,7 +560,9 @@ async def main() -> None:
     config = load_config(args.config)
     logger.info("Jarvis starting — profile: {}", config.profile_name)
 
-    # Initialize all components
+    # ------------------------------------------------------------------
+    # Shared components (both modes)
+    # ------------------------------------------------------------------
     memory = MemoryDB(config.memory.db_path)
     router = LLMRouter(config.llm)
     ollama = OllamaClient(config.llm)
@@ -216,50 +605,68 @@ async def main() -> None:
         from core.audio_capture import AudioCapture
         from core.stt import STTEngine
 
-        stt = STTEngine(config.whisper)
+        stt_engine = STTEngine(config.whisper)
         audio_capture = AudioCapture()
         try:
             print("Grabando audio… hablá ahora.")
             audio = await audio_capture.capture_until_silence()
-            text = await stt.transcribe(audio)
+            text = await stt_engine.transcribe(audio)
             print(f"Transcripción: {text!r}")
         except NotImplementedError:
             print("STT / captura de audio no implementado todavía.")
         return
 
     # ------------------------------------------------------------------
-    # Main text input loop
+    # Mode selection: voice vs text
     # ------------------------------------------------------------------
 
-    print("JARVIS v1.0 — Escribí tu comando (o 'salir' para terminar)")
-    print(
-        f"Modo: {'forzado → ' + force_target if force_target else 'router automático'}"
-    )
-    print()
+    text_mode_requested = args.no_ui or args.text_mode
 
-    while True:
-        try:
-            text: str = await asyncio.to_thread(input, ">>> ")
-        except (EOFError, KeyboardInterrupt):
-            break
+    if not text_mode_requested:
+        # Try to bring up full voice + UI mode, degrading gracefully
+        pyqt6_ok = _try_import_pyqt6()
+        audio_ok = _try_import_audio_deps()
 
-        text = text.strip()
-        if not text or text.lower() in ("salir", "exit", "quit"):
-            break
+        if not pyqt6_ok:
+            logger.warning(
+                "PyQt6 not installed — falling back to text mode. "
+                "Install with: pip install PyQt6"
+            )
+            text_mode_requested = True
+        elif not audio_ok:
+            logger.warning(
+                "Audio deps (sounddevice/numpy) not installed — falling back to text mode. "
+                "Install with: pip install sounddevice numpy"
+            )
+            text_mode_requested = True
 
-        response = await handle_interaction(
-            text,
-            router,
-            llm_map,
-            dispatcher,
-            tts,
-            memory,
-            session_id,
-            force_target,
+    if not text_mode_requested:
+        # Voice mode: this call blocks (runs Qt event loop) and never returns
+        # normally — it exits the process when the user quits.
+        # We exit the asyncio.run() context by calling sys.exit() inside.
+        _run_voice_mode(
+            config=config,
+            router=router,
+            llm_map=llm_map,
+            dispatcher=dispatcher,
+            memory=memory,
+            session_id=session_id,
+            force_target=force_target,
         )
-        print(f"\nJARVIS: {response.text}\n")
+        # _run_voice_mode calls sys.exit() — code below is unreachable in voice mode
+        return  # pragma: no cover
 
-    logger.info("Jarvis shutting down")
+    # Text mode
+    logger.info("Running in text mode (no UI, no wake word)")
+    await _text_loop(
+        router=router,
+        llm_map=llm_map,
+        dispatcher=dispatcher,
+        tts=tts,
+        memory=memory,
+        session_id=session_id,
+        force_target=force_target,
+    )
 
 
 if __name__ == "__main__":

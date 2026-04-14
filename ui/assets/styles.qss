@@ -1,1 +1,116 @@
-/* Jarvis QSS stylesheet — placeholder for PyQt6 UI implementation */
+/* Jarvis UI — Futuristic QSS
+   Main orb and orb rings are custom-painted (QPainter) — no QSS needed there.
+   This file styles auxiliary Qt widgets only: menus, tooltips, scrollbars.
+*/
+
+/* ──────────────────────────────────────────────
+   CONTEXT MENU (system tray + any popup menus)
+────────────────────────────────────────────── */
+QMenu {
+    background-color: rgba(5, 10, 18, 230);
+    border: 1px solid rgba(0, 200, 255, 0.20);
+    border-radius: 4px;
+    color: #c8e8f0;
+    font-family: "Share Tech Mono", "Courier New", monospace;
+    font-size: 11px;
+    letter-spacing: 1px;
+    padding: 4px 0px;
+}
+
+QMenu::item {
+    padding: 6px 18px 6px 14px;
+    background-color: transparent;
+}
+
+QMenu::item:selected {
+    background-color: rgba(0, 200, 255, 0.15);
+    color: #00c8ff;
+}
+
+QMenu::item:disabled {
+    color: rgba(200, 232, 240, 0.30);
+}
+
+QMenu::separator {
+    height: 1px;
+    background: rgba(0, 200, 255, 0.12);
+    margin: 4px 10px;
+}
+
+/* ──────────────────────────────────────────────
+   TOOLTIP
+────────────────────────────────────────────── */
+QToolTip {
+    background-color: rgba(5, 10, 18, 230);
+    border: 1px solid rgba(0, 200, 255, 0.25);
+    border-radius: 3px;
+    color: #c8e8f0;
+    font-family: "Share Tech Mono", "Courier New", monospace;
+    font-size: 10px;
+    letter-spacing: 0.5px;
+    padding: 4px 8px;
+}
+
+/* ──────────────────────────────────────────────
+   SCROLLBAR (if any scrollable areas are added)
+────────────────────────────────────────────── */
+QScrollBar:vertical {
+    background: rgba(5, 10, 18, 0.5);
+    width: 6px;
+    border-radius: 3px;
+}
+
+QScrollBar::handle:vertical {
+    background: rgba(0, 200, 255, 0.25);
+    border-radius: 3px;
+    min-height: 20px;
+}
+
+QScrollBar::handle:vertical:hover {
+    background: rgba(0, 200, 255, 0.45);
+}
+
+QScrollBar::add-line:vertical,
+QScrollBar::sub-line:vertical {
+    height: 0px;
+}
+
+QScrollBar:horizontal {
+    background: rgba(5, 10, 18, 0.5);
+    height: 6px;
+    border-radius: 3px;
+}
+
+QScrollBar::handle:horizontal {
+    background: rgba(0, 200, 255, 0.25);
+    border-radius: 3px;
+    min-width: 20px;
+}
+
+QScrollBar::handle:horizontal:hover {
+    background: rgba(0, 200, 255, 0.45);
+}
+
+QScrollBar::add-line:horizontal,
+QScrollBar::sub-line:horizontal {
+    width: 0px;
+}
+
+/* ──────────────────────────────────────────────
+   INFO BUBBLE LABELS
+   (also styled inline in Python, QSS as fallback)
+────────────────────────────────────────────── */
+QLabel#bubble-transcript {
+    color: #4a8a9a;
+    font-family: "Share Tech Mono", "Courier New", monospace;
+    font-size: 10px;
+    letter-spacing: 0.3px;
+    background: transparent;
+}
+
+QLabel#bubble-response {
+    color: #c8e8f0;
+    font-family: "Share Tech Mono", "Courier New", monospace;
+    font-size: 12px;
+    background: transparent;
+}
