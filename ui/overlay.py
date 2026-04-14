@@ -1066,14 +1066,23 @@ def _apply_hyprland_rules() -> None:
             target_x = screen_w - size_w - 28
             target_y = screen_h - size_h - 28
 
-            cmds = [
-                ["hyprctl", "dispatch", "setfloating", f"address:{addr}"],
-                ["hyprctl", "dispatch", "pin", f"address:{addr}"],
-                ["hyprctl", "dispatch", "movewindowpixel",
-                 f"exact {target_x} {target_y}", f"address:{addr}"],
-                ["hyprctl", "setprop", f"address:{addr}", "bordersize", "0"],
-                ["hyprctl", "setprop", f"address:{addr}", "shadow", "0"],
-            ]
+            a = f"address:{addr}"
+            is_floating = client.get("floating", False)
+            is_pinned = client.get("pinned", False)
+
+            cmds: list[list[str]] = []
+            if not is_floating:
+                cmds.append(["hyprctl", "dispatch", "setfloating", a])
+            if not is_pinned:
+                cmds.append(["hyprctl", "dispatch", "pin", a])
+            # Position and size — always apply
+            cmds.append(["hyprctl", "dispatch", "movewindowpixel",
+                         f"exact {target_x} {target_y},{a}"])
+            cmds.append(["hyprctl", "dispatch", "resizewindowpixel",
+                         f"exact {size_w} {size_h},{a}"])
+            cmds.append(["hyprctl", "setprop", a, "bordersize", "0"])
+            cmds.append(["hyprctl", "setprop", a, "shadow", "0"])
+
             for cmd in cmds:
                 try:
                     subprocess.run(cmd, capture_output=True, timeout=2)
