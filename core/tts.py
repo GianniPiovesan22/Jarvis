@@ -1,7 +1,7 @@
-"""TTSEngine — piper-tts CLI integration for PipeWire systems.
+"""TTSEngine — Edge TTS integration for fast, high-quality speech synthesis.
 
-Pipes text through piper-tts and plays the raw audio with pw-play
-(PipeWire native) falling back to aplay when pw-play is not available.
+Uses Microsoft Edge's neural TTS voices via the edge-tts library.
+Audio is generated as MP3 and played with mpv (preferred) or ffplay.
 
 speak()           — full text, waits for playback to finish
 speak_streaming() — splits on sentence boundaries, lower first-word latency
@@ -12,189 +12,132 @@ from __future__ import annotations
 import asyncio
 import re
 import shutil
+import tempfile
 import time
+from pathlib import Path
 from typing import Final
 
 from loguru import logger
 
 from core.config_loader import TTSConfig
 
-# piper output: 22050 Hz, mono, signed 16-bit little-endian
-_PIPER_RATE: Final[int] = 22_050
-_PIPER_CHANNELS: Final[int] = 1
-_PIPER_FORMAT_APLAY: Final[str] = "S16_LE"
+# Default voice: Argentine Spanish male
+_DEFAULT_VOICE: Final[str] = "es-AR-TomasNeural"
 
 # Regex that splits on sentence-ending punctuation followed by whitespace
 _SENTENCE_RE: re.Pattern[str] = re.compile(r"(?<=[.!?;])\s+")
 
 
 class TTSEngine:
-    """Text-to-speech engine using piper-tts subprocess.
+    """Text-to-speech engine using Edge TTS (Microsoft neural voices).
 
     Args:
         config: TTSConfig with voice name and speed multiplier.
     """
 
     def __init__(self, config: TTSConfig) -> None:
-        self._config = config
-        # length_scale: lower = faster. speed 1.1 → ~0.91
-        self._length_scale: float = round(1.0 / config.speed, 4)
-        self._player_cmd: list[str] = _resolve_player()
+        self._voice = config.voice if config.voice != "es_ES-davefx-high" else _DEFAULT_VOICE
+        self._rate = _speed_to_rate(config.speed)
+        self._player = _resolve_player()
         logger.debug(
-            "TTSEngine: voice='{}' speed={} length_scale={} player={}",
-            config.voice,
-            config.speed,
-            self._length_scale,
-            self._player_cmd[0],
+            "TTSEngine: voice='{}' rate='{}' player='{}'",
+            self._voice,
+            self._rate,
+            self._player,
         )
 
-    # ------------------------------------------------------------------
-    # Public API
-    # ------------------------------------------------------------------
-
     async def speak(self, text: str) -> None:
-        """Synthesize *text* and play it to completion.
-
-        Args:
-            text: Plain text to speak (no SSML).
-        """
+        """Synthesize *text* and play it to completion."""
         if not text.strip():
             return
         t0 = time.monotonic()
-        await self._run_pipeline(text)
-        logger.info("TTSEngine: spoke {:.2f}s | '{}'", time.monotonic() - t0, _truncate(text))
+        await self._synthesize_and_play(text)
+        logger.info("TTS: spoke {:.2f}s | '{}'", time.monotonic() - t0, _truncate(text))
 
     async def speak_streaming(self, text: str) -> None:
-        """Synthesize *text* sentence by sentence for lower start latency.
-
-        Each sentence is synthesised and played before the next starts.
-        The first word of the response is heard sooner than with speak().
-
-        Args:
-            text: Plain text to speak.
-        """
+        """Synthesize *text* sentence by sentence for lower start latency."""
         if not text.strip():
             return
 
         sentences = _split_sentences(text)
-        logger.debug("TTSEngine: streaming {} sentence(s)", len(sentences))
+        logger.debug("TTS: streaming {} sentence(s)", len(sentences))
 
         t0 = time.monotonic()
         for sentence in sentences:
             if sentence.strip():
-                await self._run_pipeline(sentence)
+                await self._synthesize_and_play(sentence)
 
         logger.info(
-            "TTSEngine: streamed {} sentence(s) in {:.2f}s",
+            "TTS: streamed {} sentence(s) in {:.2f}s",
             len(sentences),
             time.monotonic() - t0,
         )
 
-    # ------------------------------------------------------------------
-    # Internal
-    # ------------------------------------------------------------------
+    async def _synthesize_and_play(self, text: str) -> None:
+        """Generate audio with edge-tts and play it."""
+        try:
+            import edge_tts
+        except ImportError:
+            raise RuntimeError(
+                "edge-tts not installed. Run: pip install edge-tts"
+            )
 
-    async def _run_pipeline(self, text: str) -> None:
-        """Run: echo text | piper --output_raw | pw-play (or aplay)."""
-        piper_cmd = _build_piper_cmd(self._config.voice, self._length_scale)
-        player_cmd = self._player_cmd
-
-        logger.debug("TTSEngine: synthesising '{}'", _truncate(text))
+        with tempfile.NamedTemporaryFile(suffix=".mp3", delete=False) as tmp:
+            tmp_path = tmp.name
 
         try:
-            # piper reads from stdin, writes raw PCM to stdout
-            piper_proc = await asyncio.create_subprocess_exec(
-                *piper_cmd,
-                stdin=asyncio.subprocess.PIPE,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
+            communicate = edge_tts.Communicate(
+                text=text,
+                voice=self._voice,
+                rate=self._rate,
             )
+            await communicate.save(tmp_path)
 
-            # player reads raw PCM from stdin
-            player_proc = await asyncio.create_subprocess_exec(
-                *player_cmd,
-                stdin=asyncio.subprocess.PIPE,
-                stdout=asyncio.subprocess.DEVNULL,
-                stderr=asyncio.subprocess.PIPE,
-            )
+            # Play the audio file
+            await self._play_file(tmp_path)
+        finally:
+            Path(tmp_path).unlink(missing_ok=True)
 
-            # Send text to piper, collect PCM, forward to player
-            piper_stdout, piper_stderr = await piper_proc.communicate(
-                input=text.encode("utf-8")
-            )
+    async def _play_file(self, path: str) -> None:
+        """Play an audio file using the system player."""
+        if self._player == "mpv":
+            cmd = ["mpv", "--no-video", "--really-quiet", path]
+        elif self._player == "ffplay":
+            cmd = ["ffplay", "-nodisp", "-autoexit", "-loglevel", "quiet", path]
+        elif self._player == "pw-play":
+            # pw-play can handle mp3 via pipewire
+            cmd = ["pw-play", path]
+        else:
+            cmd = ["aplay", path]
 
-            if piper_proc.returncode != 0:
-                logger.error(
-                    "piper exited with code {}: {}",
-                    piper_proc.returncode,
-                    piper_stderr.decode(errors="replace").strip(),
-                )
-                player_proc.stdin.close()  # type: ignore[union-attr]
-                await player_proc.wait()
-                return
+        proc = await asyncio.create_subprocess_exec(
+            *cmd,
+            stdout=asyncio.subprocess.DEVNULL,
+            stderr=asyncio.subprocess.DEVNULL,
+        )
+        await proc.communicate()
 
-            # Feed PCM to the player
-            player_stdout, player_stderr = await player_proc.communicate(
-                input=piper_stdout
-            )
-
-            if player_proc.returncode != 0:
-                logger.error(
-                    "{} exited with code {}: {}",
-                    player_cmd[0],
-                    player_proc.returncode,
-                    player_stderr.decode(errors="replace").strip(),
-                )
-
-        except FileNotFoundError as exc:
-            raise RuntimeError(
-                f"TTS pipeline binary not found: {exc}. "
-                "Install piper-tts and ensure pw-play or aplay is available."
-            ) from exc
+        if proc.returncode != 0:
+            logger.warning("Audio player '{}' exited with code {}", self._player, proc.returncode)
 
 
-# ---------------------------------------------------------------------------
-# Module-level helpers
-# ---------------------------------------------------------------------------
-
-
-def _resolve_player() -> list[str]:
-    """Return the play command to use, preferring pw-play over aplay."""
-    if shutil.which("pw-play"):
-        return [
-            "pw-play",
-            f"--rate={_PIPER_RATE}",
-            f"--channels={_PIPER_CHANNELS}",
-            "--format=s16",
-            "-",
-        ]
-    if shutil.which("aplay"):
-        logger.warning("pw-play not found — falling back to aplay")
-        return [
-            "aplay",
-            f"--rate={_PIPER_RATE}",
-            f"--channels={_PIPER_CHANNELS}",
-            f"--format={_PIPER_FORMAT_APLAY}",
-            "-",
-        ]
+def _resolve_player() -> str:
+    """Find the best available audio player."""
+    for player in ("mpv", "ffplay", "pw-play", "aplay"):
+        if shutil.which(player):
+            return player
     raise RuntimeError(
-        "No audio player found. Install pw-play (pipewire-pulse) or aplay (alsa-utils)."
+        "No audio player found. Install mpv, ffplay, or pw-play."
     )
 
 
-def _build_piper_cmd(voice: str, length_scale: float) -> list[str]:
-    """Build the piper CLI invocation."""
-    if not shutil.which("piper"):
-        raise RuntimeError(
-            "piper-tts is not installed or not on PATH. "
-            "See: https://github.com/rhasspy/piper"
-        )
-    return [
-        "piper",
-        "--model", voice,
-        "--output_raw",
-        "--length_scale", str(length_scale),
-    ]
+def _speed_to_rate(speed: float) -> str:
+    """Convert speed multiplier (1.0=normal, 1.1=faster) to Edge TTS rate string."""
+    # Edge TTS uses "+10%", "-20%", etc.
+    pct = round((speed - 1.0) * 100)
+    if pct >= 0:
+        return f"+{pct}%"
+    return f"{pct}%"
 
 
 def _split_sentences(text: str) -> list[str]:

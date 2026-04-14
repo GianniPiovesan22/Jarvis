@@ -42,7 +42,7 @@ llm:
   history_turns: 10
 
 tts:
-  voice: "es_ES-davefx-high"
+  voice: "es-AR-TomasNeural"
   speed: 1.1
 
 memory:
