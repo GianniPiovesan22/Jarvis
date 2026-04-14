@@ -96,11 +96,11 @@ async def handle_interaction(
             tool_results.append(result)
         response = await llm.complete_with_result(tool_results)
 
-    # TTS — stub raises NotImplementedError, which we silently swallow
+    # TTS — gracefully skip if not available
     try:
         await tts.speak(response.text)
-    except NotImplementedError:
-        pass
+    except (NotImplementedError, RuntimeError) as e:
+        logger.debug("TTS skipped: {}", e)
 
     # Persist the turn to memory
     memory.save_turn("user", text, session_id)
