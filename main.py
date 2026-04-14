@@ -393,7 +393,8 @@ def _run_voice_mode(
 
     # Must create QApplication before any other Qt objects
     app = QApplication(sys.argv)
-    app.setApplicationName("Jarvis")
+    app.setApplicationName("jarvis-overlay")
+    app.setDesktopFileName("jarvis-overlay")
     app.setQuitOnLastWindowClosed(False)  # keep alive when overlay is hidden
 
     overlay = JarvisOverlay(config.ui)

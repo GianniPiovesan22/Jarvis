@@ -857,9 +857,6 @@ class JarvisOverlay(QWidget):
         self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating)
         self.setWindowOpacity(self._config.opacity)
 
-        # Apply Hyprland window rules for proper overlay behavior
-        _apply_hyprland_rules()
-
         # Position bottom-right with 28px margin (matching HTML)
         screen = QApplication.primaryScreen()
         if screen:
@@ -951,6 +948,10 @@ class JarvisOverlay(QWidget):
         """Animate the overlay appearing (slide up from bottom)."""
         if not self.isVisible():
             self.show()
+
+            # Apply Hyprland rules after the window is mapped (needs delay)
+            QTimer.singleShot(300, _apply_hyprland_rules)
+
             # Slide-up animation via geometry
             screen = QApplication.primaryScreen()
             if screen:
@@ -1021,37 +1022,41 @@ class JarvisOverlay(QWidget):
 
 
 def _apply_hyprland_rules() -> None:
-    """Apply Hyprland window rules so the overlay behaves as a true overlay.
+    """Apply Hyprland window rules via hyprctl dispatch after window is mapped.
 
-    Rules:
-    - float: don't tile, stay floating
-    - pin: visible on all workspaces, stays on top
-    - noborder/noshadow: clean overlay look
-    - nofocus: don't steal focus from other windows
-    - size: keep it small
-    - move: position bottom-right
+    Called from a QTimer after the window is shown, so hyprctl can find it.
+    Uses dispatch commands: setfloating, pin, and setprop for bordersize.
     """
+    import json
     import subprocess
 
-    rules = [
-        "float,title:^(jarvis-overlay)$",
-        "pin,title:^(jarvis-overlay)$",
-        "noborder,title:^(jarvis-overlay)$",
-        "noshadow,title:^(jarvis-overlay)$",
-        "nofocus,title:^(jarvis-overlay)$",
-        "noblur,title:^(jarvis-overlay)$",
-        "opaque,title:^(jarvis-overlay)$",
-    ]
+    try:
+        result = subprocess.run(
+            ["hyprctl", "clients", "-j"],
+            capture_output=True, text=True, timeout=2,
+        )
+        clients = json.loads(result.stdout)
+    except (FileNotFoundError, subprocess.TimeoutExpired, json.JSONDecodeError):
+        return  # Not on Hyprland
 
-    for rule in rules:
-        try:
-            subprocess.run(
-                ["hyprctl", "keyword", "windowrulev2", rule],
-                capture_output=True,
-                timeout=2,
-            )
-        except (FileNotFoundError, subprocess.TimeoutExpired):
-            # Not on Hyprland — skip silently
+    for client in clients:
+        if client.get("class") == "jarvis-overlay":
+            addr = client["address"]
+            logger.debug("Found jarvis-overlay window at {}", addr)
+
+            cmds = [
+                ["hyprctl", "dispatch", "setfloating", f"address:{addr}"],
+                ["hyprctl", "dispatch", "pin", f"address:{addr}"],
+                ["hyprctl", "setprop", f"address:{addr}", "bordersize", "0"],
+                ["hyprctl", "setprop", f"address:{addr}", "shadow", "0"],
+            ]
+            for cmd in cmds:
+                try:
+                    subprocess.run(cmd, capture_output=True, timeout=2)
+                except (FileNotFoundError, subprocess.TimeoutExpired):
+                    pass
+
+            logger.info("Hyprland overlay rules applied: float + pin + noborder")
             return
 
-    logger.debug("Hyprland window rules applied for jarvis-overlay")
+    logger.warning("jarvis-overlay window not found by hyprctl — rules not applied")
