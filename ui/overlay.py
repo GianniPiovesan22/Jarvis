@@ -847,6 +847,7 @@ class JarvisOverlay(QWidget):
     # ------------------------------------------------------------------
 
     def _setup_window(self) -> None:
+        self.setWindowTitle("jarvis-overlay")
         self.setWindowFlags(
             Qt.WindowType.FramelessWindowHint
             | Qt.WindowType.WindowStaysOnTopHint
@@ -855,6 +856,9 @@ class JarvisOverlay(QWidget):
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
         self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating)
         self.setWindowOpacity(self._config.opacity)
+
+        # Apply Hyprland window rules for proper overlay behavior
+        _apply_hyprland_rules()
 
         # Position bottom-right with 28px margin (matching HTML)
         screen = QApplication.primaryScreen()
@@ -1009,3 +1013,45 @@ class JarvisOverlay(QWidget):
         self._bubble.set_response(text, typewriter=True)
         self._bubble.setVisible(True)
         self.adjustSize()
+
+
+# ---------------------------------------------------------------------------
+# Hyprland integration
+# ---------------------------------------------------------------------------
+
+
+def _apply_hyprland_rules() -> None:
+    """Apply Hyprland window rules so the overlay behaves as a true overlay.
+
+    Rules:
+    - float: don't tile, stay floating
+    - pin: visible on all workspaces, stays on top
+    - noborder/noshadow: clean overlay look
+    - nofocus: don't steal focus from other windows
+    - size: keep it small
+    - move: position bottom-right
+    """
+    import subprocess
+
+    rules = [
+        "float,title:^(jarvis-overlay)$",
+        "pin,title:^(jarvis-overlay)$",
+        "noborder,title:^(jarvis-overlay)$",
+        "noshadow,title:^(jarvis-overlay)$",
+        "nofocus,title:^(jarvis-overlay)$",
+        "noblur,title:^(jarvis-overlay)$",
+        "opaque,title:^(jarvis-overlay)$",
+    ]
+
+    for rule in rules:
+        try:
+            subprocess.run(
+                ["hyprctl", "keyword", "windowrulev2", rule],
+                capture_output=True,
+                timeout=2,
+            )
+        except (FileNotFoundError, subprocess.TimeoutExpired):
+            # Not on Hyprland — skip silently
+            return
+
+    logger.debug("Hyprland window rules applied for jarvis-overlay")
