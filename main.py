@@ -164,6 +164,8 @@ class JarvisEngine:
         on_state_changed: Any = None,       # callable(str)
         on_transcription: Any = None,       # callable(str)
         on_response: Any = None,            # callable(str)
+        on_show: Any = None,                # callable() — show overlay
+        on_hide: Any = None,                # callable() — hide overlay
     ) -> None:
         self._config = config
         self._router = router
@@ -181,6 +183,8 @@ class JarvisEngine:
         self._on_state_changed = on_state_changed
         self._on_transcription = on_transcription
         self._on_response = on_response
+        self._on_show = on_show
+        self._on_hide = on_hide
 
         self._thread: threading.Thread | None = None
         self._loop: asyncio.AbstractEventLoop | None = None
@@ -263,6 +267,10 @@ class JarvisEngine:
         self._wake_word.pause()  # stop listening while we process
 
         try:
+            # ---- 0. Show overlay ----
+            if self._on_show:
+                self._on_show()
+
             # ---- 1. Listening: capture audio ----
             logger.info("Wake word detected — starting audio capture")
             self._emit_state("listening")
@@ -328,13 +336,17 @@ class JarvisEngine:
             except (NotImplementedError, Exception):
                 logger.warning("JarvisEngine: TTS speak failed or not implemented")
 
-            # ---- 5. Auto-hide after 5 seconds ----
-            await asyncio.sleep(5.0)
-            self._emit_state("idle")
+            # ---- 5. Cooldown before going back to sleep ----
+            await asyncio.sleep(3.0)
 
         finally:
+            self._emit_state("idle")
+            if self._on_hide:
+                self._on_hide()
             self._processing.clear()
-            self._wake_word.resume()  # resume listening for next wake word
+            # Extra cooldown before resuming wake word to avoid self-trigger
+            await asyncio.sleep(1.0)
+            self._wake_word.resume()
 
     # ------------------------------------------------------------------
     # Helpers
@@ -398,7 +410,7 @@ def _run_voice_mode(
     app.setQuitOnLastWindowClosed(False)  # keep alive when overlay is hidden
 
     overlay = JarvisOverlay(config.ui)
-    overlay.show_overlay()
+    # Start HIDDEN — only show when wake word detected
 
     tray = SystemTray(overlay)
     tray.show()
@@ -422,6 +434,8 @@ def _run_voice_mode(
         on_state_changed=lambda s: (overlay.set_state(s), tray.update_state(s)),
         on_transcription=overlay.show_transcription,
         on_response=overlay.show_response,
+        on_show=overlay.show_overlay,
+        on_hide=overlay.hide_overlay,
     )
 
     # Handle Ctrl+C cleanly: stop engine then quit Qt

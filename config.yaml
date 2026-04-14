@@ -23,7 +23,7 @@ profiles:
 # Common to all profiles
 wake_word:
   model_path: "models/hey_jarvis.onnx"
-  threshold: 0.5
+  threshold: 0.7
 
 llm:
   # Router word-count thresholds
