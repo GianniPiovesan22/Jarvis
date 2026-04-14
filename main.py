@@ -14,15 +14,37 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import os
 import signal
 import sys
 import threading
 import uuid
+from pathlib import Path
 from typing import Any
 
 from loguru import logger
 
 from core.config_loader import load_config
+
+# ---------------------------------------------------------------------------
+# PID file — written on startup so scripts/trigger.sh can find us
+# ---------------------------------------------------------------------------
+
+_PID_FILE = Path("/tmp/jarvis.pid")
+
+
+def _write_pid() -> None:
+    _PID_FILE.write_text(str(os.getpid()))
+    logger.debug("PID {} written to {}", os.getpid(), _PID_FILE)
+
+
+def _remove_pid() -> None:
+    try:
+        _PID_FILE.unlink(missing_ok=True)
+    except OSError:
+        pass
+
+
 from core.dispatcher import ToolDispatcher
 from core.llm_claude import ClaudeClient
 from core.llm_gemini import GeminiClient
@@ -277,6 +299,7 @@ class JarvisEngine:
 
             try:
                 audio: bytes = await self._audio_capture.capture_until_silence()
+                logger.info("JarvisEngine: audio captured — {} bytes", len(audio))
             except Exception:
                 logger.exception("JarvisEngine: audio capture failed")
                 self._emit_state("error")
@@ -289,6 +312,7 @@ class JarvisEngine:
 
             try:
                 text: str = await self._stt.transcribe(audio)
+                logger.info("JarvisEngine: STT result → {!r}", text)
             except Exception:
                 logger.exception("JarvisEngine: STT transcription failed")
                 self._emit_state("error")
@@ -297,7 +321,7 @@ class JarvisEngine:
                 return
 
             if not text.strip():
-                logger.info("JarvisEngine: empty transcription, returning to idle")
+                logger.warning("JarvisEngine: STT returned empty text — nothing to process")
                 self._emit_state("idle")
                 return
 
@@ -319,8 +343,11 @@ class JarvisEngine:
                     self._session_id,
                     self._force_target,
                 )
-            except Exception:
-                logger.exception("JarvisEngine: LLM interaction failed")
+            except Exception as exc:
+                logger.exception(
+                    "JarvisEngine: LLM interaction failed — {}: {}",
+                    type(exc).__name__, exc,
+                )
                 self._emit_state("error")
                 await asyncio.sleep(2.0)
                 self._emit_state("idle")
@@ -344,8 +371,12 @@ class JarvisEngine:
             if self._on_hide:
                 self._on_hide()
             self._processing.clear()
-            # Extra cooldown before resuming wake word to avoid self-trigger
-            await asyncio.sleep(1.0)
+            # Extra cooldown before resuming wake word to avoid self-trigger.
+            # Wrapped in shield so a CancelledError doesn't skip the resume().
+            try:
+                await asyncio.shield(asyncio.sleep(1.0))
+            except asyncio.CancelledError:
+                pass
             self._wake_word.resume()
 
     # ------------------------------------------------------------------
@@ -441,16 +472,32 @@ def _run_voice_mode(
     # Handle Ctrl+C cleanly: stop engine then quit Qt
     def _handle_sigint(*_: Any) -> None:
         logger.info("SIGINT received — shutting down")
+        _remove_pid()
         engine.stop()
         app.quit()
 
+    # SIGUSR1: keyboard shortcut trigger (Super+J via scripts/trigger.sh)
+    def _handle_sigusr1(*_: Any) -> None:
+        logger.info("SIGUSR1 received — keyboard trigger activated")
+        if engine._loop is not None and engine._loop.is_running():
+            engine._loop.call_soon_threadsafe(
+                lambda: asyncio.ensure_future(engine._handle_wake_word())
+            )
+
     signal.signal(signal.SIGINT, _handle_sigint)
+    signal.signal(signal.SIGUSR1, _handle_sigusr1)
+
+    # Write PID so scripts/trigger.sh can find us
+    _write_pid()
 
     engine.start()
 
-    logger.info("Jarvis voice mode running — waiting for wake word")
+    logger.info(
+        "Jarvis voice mode running — waiting for wake word | hotkey: kill -SIGUSR1 $(cat /tmp/jarvis.pid)"
+    )
     exit_code = app.exec()
     engine.stop()
+    _remove_pid()
     sys.exit(exit_code)
 
 
@@ -563,7 +610,32 @@ async def main() -> None:
         default="config.yaml",
         help="Ruta al archivo de configuración (default: config.yaml)",
     )
+    parser.add_argument(
+        "--trigger",
+        action="store_true",
+        help="Enviar SIGUSR1 al proceso Jarvis corriendo y salir (hotkey trigger)",
+    )
+    parser.add_argument(
+        "--listen-once",
+        action="store_true",
+        help="Capturar audio una vez, procesar y salir (sin wake word)",
+    )
     args = parser.parse_args()
+
+    # --trigger: send SIGUSR1 to the running Jarvis and exit immediately
+    if args.trigger:
+        if not _PID_FILE.exists():
+            print("Jarvis is not running (no PID file at /tmp/jarvis.pid)", file=sys.stderr)
+            sys.exit(1)
+        pid = int(_PID_FILE.read_text().strip())
+        try:
+            os.kill(pid, signal.SIGUSR1)
+            logger.info("SIGUSR1 sent to Jarvis PID {}", pid)
+        except ProcessLookupError:
+            print(f"Jarvis process {pid} not found — stale PID file", file=sys.stderr)
+            _remove_pid()
+            sys.exit(1)
+        return
 
     # Resolve LLM force target
     force_target: RouteTarget | None = None
@@ -631,6 +703,30 @@ async def main() -> None:
             print(f"Transcripción: {text!r}")
         except NotImplementedError:
             print("STT / captura de audio no implementado todavía.")
+        return
+
+    if args.listen_once:
+        logger.info("listen-once mode — skipping wake word, capturing audio directly")
+        from core.audio_capture import AudioCapture
+        from core.stt import STTEngine
+
+        stt_engine = STTEngine(config.whisper)
+        audio_capture = AudioCapture()
+        try:
+            logger.info("Capturing audio…")
+            audio = await audio_capture.capture_until_silence()
+            logger.info("Audio captured: {} bytes", len(audio))
+            text = await stt_engine.transcribe(audio)
+            logger.info("Transcription: {!r}", text)
+            if not text.strip():
+                logger.warning("Empty transcription — nothing to process")
+                return
+            response = await handle_interaction(
+                text, router, llm_map, dispatcher, tts, memory, session_id, force_target
+            )
+            print(f"\nJARVIS: {response.text}\n")
+        except NotImplementedError as e:
+            logger.error("listen-once: component not implemented: {}", e)
         return
 
     # ------------------------------------------------------------------

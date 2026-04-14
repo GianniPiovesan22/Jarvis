@@ -51,8 +51,37 @@ python main.py --test-stt               # test STT transcription
 python main.py --force-local            # route ALL commands to Ollama
 python main.py --force-claude           # route ALL commands to claude-sonnet
 python main.py --force-gemini           # route ALL commands to gemini-flash
+python main.py --trigger                # send SIGUSR1 to running Jarvis (keyboard trigger)
+python main.py --listen-once            # capture audio once, process, and exit (no wake word)
 python scripts/train_wake_word.py       # train custom wake word model
 ```
+
+## Keyboard Shortcut (Super+J)
+
+Jarvis supports a global hotkey trigger as the PRIMARY activation method — more reliable than the wake word.
+
+**How it works:**
+1. On startup, Jarvis writes its PID to `/tmp/jarvis.pid`
+2. `scripts/trigger.sh` reads that PID and sends `SIGUSR1`
+3. Jarvis handles SIGUSR1 by immediately triggering `_handle_wake_word()` (skips wake word detection)
+
+**Hyprland config** — add to `~/.config/hypr/hyprland.conf`:
+```
+bind = SUPER, J, exec, /home/giannip/projects/Jarvis/scripts/trigger.sh
+```
+
+Or copy/symlink the script to your Hyprland scripts folder:
+```bash
+ln -s /home/giannip/projects/Jarvis/scripts/trigger.sh ~/.config/hypr/scripts/jarvis-trigger.sh
+```
+
+Wake word stays active as a secondary/bonus trigger. Threshold is set to 0.5 in `config.yaml`.
+
+## Hyprland Window Rules
+
+`scripts/hyprland-rules.conf` is loaded once at overlay init via `hyprctl keyword source`.
+It sets: float, pin, noborder, noshadow, nofocus, position (bottom-right), size.
+No manual `movewindowpixel` dispatch — rules are applied by the compositor before render.
 
 ## Environment Variables
 

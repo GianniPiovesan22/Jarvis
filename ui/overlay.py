@@ -840,6 +840,9 @@ class JarvisOverlay(QWidget):
         self._connect_signals()
         self._start_animation()
 
+        # Load Hyprland window rules once at startup (before first show)
+        _apply_hyprland_rules()
+
         logger.info("JarvisOverlay initialized — orb_size={}, state=idle", config.orb_size)
 
     # ------------------------------------------------------------------
@@ -950,9 +953,6 @@ class JarvisOverlay(QWidget):
         if not self.isVisible():
             self.show()
 
-            # Apply Hyprland rules after the window is mapped (needs delay)
-            QTimer.singleShot(300, _apply_hyprland_rules)
-
             # Slide-up animation via geometry
             screen = QApplication.primaryScreen()
             if screen:
@@ -1023,76 +1023,28 @@ class JarvisOverlay(QWidget):
 
 
 def _apply_hyprland_rules() -> None:
-    """Apply Hyprland window rules via hyprctl dispatch after window is mapped.
+    """Load static Hyprland window rules from scripts/hyprland-rules.conf.
 
-    Called from a QTimer after the window is shown, so hyprctl can find it.
-    Uses dispatch commands: setfloating, pin, movewindowpixel, and setprop.
+    Uses ``hyprctl keyword source`` so rules are applied by the compositor
+    before the window is even rendered, guaranteeing correct position/float/pin.
+    Called ONCE at overlay init — not on every show().
     """
-    import json
     import subprocess
+    from pathlib import Path
+
+    rules_path = Path(__file__).parent.parent / "scripts" / "hyprland-rules.conf"
+    if not rules_path.exists():
+        logger.warning("hyprland-rules.conf not found at {}", rules_path)
+        return
 
     try:
-        result = subprocess.run(
-            ["hyprctl", "clients", "-j"],
-            capture_output=True, text=True, timeout=2,
+        subprocess.run(
+            ["hyprctl", "keyword", "source", str(rules_path.resolve())],
+            capture_output=True,
+            timeout=2,
         )
-        clients = json.loads(result.stdout)
-    except (FileNotFoundError, subprocess.TimeoutExpired, json.JSONDecodeError):
-        return  # Not on Hyprland
-
-    # Get screen resolution for bottom-right positioning
-    try:
-        mon_result = subprocess.run(
-            ["hyprctl", "monitors", "-j"],
-            capture_output=True, text=True, timeout=2,
-        )
-        monitors = json.loads(mon_result.stdout)
-        if monitors:
-            screen_w = monitors[0]["width"]
-            screen_h = monitors[0]["height"]
-        else:
-            screen_w, screen_h = 1920, 1080
-    except (FileNotFoundError, subprocess.TimeoutExpired, json.JSONDecodeError):
-        screen_w, screen_h = 1920, 1080
-
-    for client in clients:
-        if client.get("class") == "jarvis-overlay":
-            addr = client["address"]
-            size_w = client.get("size", [240, 240])[0]
-            size_h = client.get("size", [240, 240])[1]
-            logger.debug("Found jarvis-overlay at {} ({}x{})", addr, size_w, size_h)
-
-            # Bottom-right position with 28px margin
-            target_x = screen_w - size_w - 28
-            target_y = screen_h - size_h - 28
-
-            a = f"address:{addr}"
-            is_floating = client.get("floating", False)
-            is_pinned = client.get("pinned", False)
-
-            cmds: list[list[str]] = []
-            if not is_floating:
-                cmds.append(["hyprctl", "dispatch", "setfloating", a])
-            if not is_pinned:
-                cmds.append(["hyprctl", "dispatch", "pin", a])
-            # Position and size — always apply
-            cmds.append(["hyprctl", "dispatch", "movewindowpixel",
-                         f"exact {target_x} {target_y},{a}"])
-            cmds.append(["hyprctl", "dispatch", "resizewindowpixel",
-                         f"exact {size_w} {size_h},{a}"])
-            cmds.append(["hyprctl", "setprop", a, "bordersize", "0"])
-            cmds.append(["hyprctl", "setprop", a, "shadow", "0"])
-
-            for cmd in cmds:
-                try:
-                    subprocess.run(cmd, capture_output=True, timeout=2)
-                except (FileNotFoundError, subprocess.TimeoutExpired):
-                    pass
-
-            logger.info(
-                "Hyprland overlay: float + pin + noborder + moved to ({}, {})",
-                target_x, target_y,
-            )
-            return
-
-    logger.warning("jarvis-overlay window not found by hyprctl — rules not applied")
+        logger.info("Hyprland rules loaded from {}", rules_path)
+    except FileNotFoundError:
+        pass  # Not on Hyprland
+    except subprocess.TimeoutExpired:
+        logger.warning("hyprctl timed out loading rules")
