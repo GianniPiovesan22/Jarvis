@@ -7,9 +7,9 @@
 - **Wake word:** openwakeword with custom "Ey Jarvis" model
 - **LLM local:** Ollama — llama3.2:3b (PC, ROCm) / llama3.2:1b (notebook, CPU)
 - **LLM cloud:** Claude API (anthropic SDK) — haiku for medium commands, sonnet for complex
-- **LLM cloud alt:** Google Gemini — gemini-2.0-flash (activated via --force-gemini only)
+- **LLM cloud alt:** Google Gemini — gemini-2.5-flash (activated via --force-gemini only)
 - **LLM Router:** classifies command complexity automatically — local → haiku → sonnet
-- **TTS:** piper-tts (local, Spanish voice es_ES-davefx-high)
+- **TTS:** edge-tts (Microsoft neural TTS, voice es-AR-TomasNeural)
 - **UI:** PyQt6 overlay — futuristic robot orb, bottom-right corner
 - **Memory:** SQLite (conversations, memory_facts, action_log)
 - **HTTP:** httpx.AsyncClient for Ollama; anthropic SDK for Claude; google-genai for Gemini
@@ -30,6 +30,18 @@ LLM_MAP = {
     "gemini_flash":  gemini,
 }
 ```
+
+## AudioCapture
+
+`core/audio_capture.py` — sounddevice-based mic recording with adaptive silence detection.
+
+Constructor params:
+- `silence_duration` (default 1.5s) — how long to wait in silence before stopping
+- `max_duration` (default 10s) — safety ceiling
+- `calibration_time` (default 0.3s) — time to measure ambient noise before applying threshold
+
+No `silence_threshold` param — the threshold is computed adaptively (2× ambient RMS, minimum 0.005).
+Returned bytes are int16 mono 16 kHz PCM — directly consumable by faster-whisper after float32 conversion.
 
 ## Conventions
 

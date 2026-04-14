@@ -8,10 +8,12 @@ States: idle, listening, processing, speaking, error
 
 from __future__ import annotations
 
+import json
 import math
 import random
+import subprocess
 import time
-from typing import Callable
+from pathlib import Path
 
 from loguru import logger
 
@@ -734,7 +736,6 @@ class InfoBubble(QWidget):
     def set_transcript(self, text: str) -> None:
         self._transcript = text
         self._transcript_label.setText(text)
-        pass  # fixed size — no adjust
 
     def set_response(self, text: str, typewriter: bool = True) -> None:
         self._response_full = text
@@ -747,7 +748,6 @@ class InfoBubble(QWidget):
             self._response_visible = text
             self._response_label.setText(text)
             self._tw_timer.stop()
-        pass  # fixed size — no adjust
 
     @pyqtSlot()
     def _typewriter_tick(self) -> None:
@@ -759,7 +759,6 @@ class InfoBubble(QWidget):
             self._response_label.setText(self._response_full)
             self._tw_timer.stop()
             self._typewriter_active = False
-        pass  # fixed size — no adjust
 
     def paintEvent(self, _event) -> None:  # type: ignore[override]
         p = QPainter(self)
@@ -957,9 +956,6 @@ class JarvisOverlay(QWidget):
 
     def _position_bottom_right(self) -> None:
         """Use hyprctl to move the overlay to bottom-right corner."""
-        import json
-        import subprocess
-
         try:
             r = subprocess.run(
                 ["hyprctl", "clients", "-j"],
@@ -1028,13 +1024,11 @@ class JarvisOverlay(QWidget):
     def _on_transcription(self, text: str) -> None:
         self._bubble.set_transcript(text)
         self._bubble.setVisible(True)
-        pass  # fixed size — no adjust
 
     @pyqtSlot(str)
     def _on_response(self, text: str) -> None:
         self._bubble.set_response(text, typewriter=True)
         self._bubble.setVisible(True)
-        pass  # fixed size — no adjust
 
 
 # ---------------------------------------------------------------------------
@@ -1043,15 +1037,12 @@ class JarvisOverlay(QWidget):
 
 
 def _apply_hyprland_rules() -> None:
-    """Load static Hyprland window rules from scripts/hyprland-rules.conf.
+    """Carga las reglas estáticas de ventana de Hyprland desde scripts/hyprland-rules.conf.
 
-    Uses ``hyprctl keyword source`` so rules are applied by the compositor
-    before the window is even rendered, guaranteeing correct position/float/pin.
-    Called ONCE at overlay init — not on every show().
+    Usa ``hyprctl keyword source`` para que las reglas sean aplicadas por el compositor
+    antes de que la ventana sea renderizada, garantizando posición/float/pin correctos.
+    Se llama UNA SOLA VEZ al iniciar el overlay, no en cada show().
     """
-    import subprocess
-    from pathlib import Path
-
     rules_path = Path(__file__).parent.parent / "scripts" / "hyprland-rules.conf"
     if not rules_path.exists():
         logger.warning("hyprland-rules.conf not found at {}", rules_path)

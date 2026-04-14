@@ -64,7 +64,7 @@ def test_load_config_llm_defaults() -> None:
     assert cfg.llm.ollama_url == "http://localhost:11434"
     assert cfg.llm.claude_haiku == "claude-haiku-4-5-20251001"
     assert cfg.llm.claude_sonnet == "claude-sonnet-4-6"
-    assert cfg.llm.gemini_model == "gemini-2.0-flash"
+    assert cfg.llm.gemini_model == "gemini-2.5-flash"
     assert cfg.llm.max_tokens == 500
     assert cfg.llm.history_turns == 10
 
@@ -72,7 +72,7 @@ def test_load_config_llm_defaults() -> None:
 def test_load_config_tts_section() -> None:
     cfg = load_config(str(FIXTURE_YAML))
     assert isinstance(cfg.tts, TTSConfig)
-    assert cfg.tts.voice == "es_ES-davefx-high"
+    assert cfg.tts.voice == "es-AR-TomasNeural"
     assert cfg.tts.speed == pytest.approx(1.1)
 
 

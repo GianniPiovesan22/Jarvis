@@ -1,7 +1,7 @@
 """Tool implementations for terminal and command execution."""
 
 import asyncio
-import os
+import shlex
 from pathlib import Path
 
 from loguru import logger
@@ -12,21 +12,33 @@ _COMMAND_TIMEOUT = 30  # seconds
 async def run_command(command: str, sudo: bool = False) -> dict:
     """Ejecuta un comando en la terminal y retorna su salida. Implemented.
 
+    Usa create_subprocess_exec (no shell) para evitar inyección de comandos.
+    Parsea el comando con shlex.split para soportar argumentos con espacios.
+
     Args:
         command: Comando a ejecutar (ej. "ls -la", "df -h").
-        sudo: Si True, ejecuta el comando con privilegios de superusuario.
+        sudo: Si True, antepone sudo a la lista de argumentos.
 
     Returns:
         Contrato estándar { success, result, error }.
         result incluye: stdout (str), stderr (str), returncode (int).
     """
     logger.debug(f"run_command called with command={command!r}, sudo={sudo}")
-    try:
-        if sudo:
-            command = f"sudo {command}"
 
-        proc = await asyncio.create_subprocess_shell(
-            command,
+    if not command or not command.strip():
+        return {"success": False, "result": None, "error": "Comando vacío"}
+
+    try:
+        try:
+            args = shlex.split(command)
+        except ValueError as e:
+            return {"success": False, "result": None, "error": f"Comando inválido: {e}"}
+
+        if sudo:
+            args = ["sudo"] + args
+
+        proc = await asyncio.create_subprocess_exec(
+            *args,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
@@ -38,7 +50,7 @@ async def run_command(command: str, sudo: bool = False) -> dict:
         except asyncio.TimeoutError:
             proc.kill()
             await proc.communicate()
-            err = f"Command timed out after {_COMMAND_TIMEOUT}s: {command!r}"
+            err = f"Comando agotó el tiempo ({_COMMAND_TIMEOUT}s): {command!r}"
             logger.error(err)
             return {"success": False, "result": None, "error": err}
 
@@ -72,7 +84,7 @@ async def open_terminal(cwd: str | None = None) -> dict:
     """
     logger.debug(f"open_terminal called with cwd={cwd!r}")
     try:
-        directory = cwd if cwd else str(Path.home())
+        directory = cwd.strip() if cwd and cwd.strip() else str(Path.home())
 
         proc = await asyncio.create_subprocess_exec(
             "kitty", "--directory", directory,
@@ -102,6 +114,10 @@ async def run_script(path: str) -> dict:
         result incluye: stdout (str), stderr (str), returncode (int).
     """
     logger.debug(f"run_script called with path={path!r}")
+
+    if not path or not path.strip():
+        return {"success": False, "result": None, "error": "Ruta de script vacía"}
+
     try:
         script_path = Path(path).expanduser().resolve()
 
@@ -133,7 +149,7 @@ async def run_script(path: str) -> dict:
         except asyncio.TimeoutError:
             proc.kill()
             await proc.communicate()
-            err = f"Script timed out after {_COMMAND_TIMEOUT}s: {path!r}"
+            err = f"Script agotó el tiempo ({_COMMAND_TIMEOUT}s): {path!r}"
             logger.error(err)
             return {"success": False, "result": None, "error": err}
 

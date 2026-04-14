@@ -19,13 +19,13 @@ llm:
   ollama_url: "http://localhost:11434"
   claude_haiku: "claude-haiku-4-5-20251001"
   claude_sonnet: "claude-sonnet-4-6"
-  gemini_model: "gemini-2.0-flash"
+  gemini_model: "gemini-2.5-flash"
   gemini_api_key_env: "GEMINI_API_KEY"
   max_tokens: 500
   history_turns: 10
 
 tts:
-  voice: "es_ES-davefx-high"
+  voice: "es-AR-TomasNeural"
   speed: 1.1
 
 memory:

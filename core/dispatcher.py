@@ -34,7 +34,7 @@ class ToolDispatcher:
         fn = self._registry.get(tool_call.name)
 
         if fn is None:
-            logger.warning(f"Unknown tool requested: {tool_call.name!r}")
+            logger.warning("Unknown tool requested: {!r}", tool_call.name)
             return ToolResult(
                 tool_call_id=tool_call.id,
                 name=tool_call.name,
@@ -57,7 +57,7 @@ class ToolDispatcher:
             )
 
         except NotImplementedError as exc:
-            logger.warning(f"Tool {tool_call.name!r} not yet implemented: {exc}")
+            logger.warning("Tool {!r} not yet implemented: {}", tool_call.name, exc)
             return ToolResult(
                 tool_call_id=tool_call.id,
                 name=tool_call.name,
@@ -70,7 +70,9 @@ class ToolDispatcher:
 
         except Exception as exc:
             logger.error(
-                f"Tool {tool_call.name!r} raised an unexpected error: {exc}",
+                "Tool {!r} raised an unexpected error: {}",
+                tool_call.name,
+                exc,
                 exc_info=True,
             )
             return ToolResult(

@@ -293,7 +293,8 @@ class JarvisEngine:
         if self._processing.is_set():
             return
         self._processing.set()
-        self._wake_word.pause()  # stop listening while we process
+        if self._wake_word is not None:
+            self._wake_word.pause()  # stop listening while we process
 
         try:
             # ---- 0. Show overlay ----
@@ -367,7 +368,7 @@ class JarvisEngine:
 
             try:
                 await self._tts.speak(response.text)
-            except (NotImplementedError, Exception):
+            except Exception:
                 logger.warning("JarvisEngine: TTS speak failed or not implemented")
 
             # ---- 5. Cooldown before going back to sleep ----
@@ -384,7 +385,8 @@ class JarvisEngine:
                 await asyncio.shield(asyncio.sleep(1.0))
             except asyncio.CancelledError:
                 pass
-            self._wake_word.resume()
+            if self._wake_word is not None:
+                self._wake_word.resume()
 
     # ------------------------------------------------------------------
     # Helpers
@@ -632,14 +634,14 @@ async def main() -> None:
     # --trigger: send SIGUSR1 to the running Jarvis and exit immediately
     if args.trigger:
         if not _PID_FILE.exists():
-            print("Jarvis is not running (no PID file at /tmp/jarvis.pid)", file=sys.stderr)
+            logger.error("Jarvis is not running (no PID file at {})", _PID_FILE)
             sys.exit(1)
         pid = int(_PID_FILE.read_text().strip())
         try:
             os.kill(pid, signal.SIGUSR1)
             logger.info("SIGUSR1 sent to Jarvis PID {}", pid)
         except ProcessLookupError:
-            print(f"Jarvis process {pid} not found — stale PID file", file=sys.stderr)
+            logger.error("Jarvis process {} not found — stale PID file", pid)
             _remove_pid()
             sys.exit(1)
         return
@@ -691,9 +693,9 @@ async def main() -> None:
         logger.info("TTS test mode — text={!r}", args.test_tts)
         try:
             await tts.speak(args.test_tts)
-            print(f"TTS: {args.test_tts!r}")
+            logger.info("TTS: {!r}", args.test_tts)
         except NotImplementedError:
-            print("TTS no implementado todavía.")
+            logger.warning("TTS no implementado todavía")
         return
 
     if args.test_stt:
@@ -704,12 +706,12 @@ async def main() -> None:
         stt_engine = STTEngine(config.whisper)
         audio_capture = AudioCapture()
         try:
-            print("Grabando audio… hablá ahora.")
+            logger.info("Grabando audio… hablá ahora")
             audio = await audio_capture.capture_until_silence()
             text = await stt_engine.transcribe(audio)
-            print(f"Transcripción: {text!r}")
+            logger.info("Transcripción: {!r}", text)
         except NotImplementedError:
-            print("STT / captura de audio no implementado todavía.")
+            logger.warning("STT / captura de audio no implementado todavía")
         return
 
     if args.listen_once:

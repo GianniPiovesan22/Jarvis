@@ -10,8 +10,8 @@ _MAX_FILE_SIZE = 50 * 1024  # 50 KB
 
 
 def _expand(path: str) -> Path:
-    """Expand ~ and return a resolved Path."""
-    return Path(path).expanduser()
+    """Expand ~ and resolve symlinks/relative components to an absolute Path."""
+    return Path(path).expanduser().resolve()
 
 
 async def read_file(path: str) -> dict:
@@ -29,6 +29,10 @@ async def read_file(path: str) -> dict:
         size_bytes (int) con el tamaño del archivo.
     """
     logger.debug(f"read_file called with path={path!r}")
+
+    if not path or not path.strip():
+        return {"success": False, "result": None, "error": "Ruta de archivo vacía"}
+
     try:
         p = _expand(path)
 
@@ -75,6 +79,10 @@ async def list_directory(path: str) -> dict:
         result incluye: entries (list[dict]) con name, type, size.
     """
     logger.debug(f"list_directory called with path={path!r}")
+
+    if not path or not path.strip():
+        return {"success": False, "result": None, "error": "Ruta de directorio vacía"}
+
     try:
         p = _expand(path)
 
@@ -122,6 +130,12 @@ async def move_file(source: str, destination: str) -> dict:
         result incluye: source (str) y destination (str) con las rutas resueltas.
     """
     logger.debug(f"move_file called with source={source!r}, destination={destination!r}")
+
+    if not source or not source.strip():
+        return {"success": False, "result": None, "error": "Ruta de origen vacía"}
+    if not destination or not destination.strip():
+        return {"success": False, "result": None, "error": "Ruta de destino vacía"}
+
     try:
         src = _expand(source)
         dst = _expand(destination)
@@ -149,13 +163,17 @@ _FORBIDDEN_PATHS = {
 
 
 def _is_safe_to_delete(p: Path) -> tuple[bool, str]:
-    """Return (is_safe, reason). A path is unsafe if it's forbidden or too shallow."""
-    resolved = p.resolve()
-    if resolved in _FORBIDDEN_PATHS:
-        return False, f"Refusing to delete protected path: {resolved}"
+    """Retorna (es_seguro, motivo). Una ruta es insegura si es protegida o demasiado superficial.
+
+    Args:
+        p: Ruta ya resuelta (expanduser + resolve) a verificar.
+    """
+    # p already resolved by _expand — check directly
+    if p in _FORBIDDEN_PATHS:
+        return False, f"Ruta protegida, operación rechazada: {p}"
     # Paths with fewer than 3 components after root (e.g. /home or /tmp) are unsafe
-    if len(resolved.parts) < 3:
-        return False, f"Path too shallow to delete safely (< 3 components): {resolved}"
+    if len(p.parts) < 3:
+        return False, f"Ruta demasiado superficial para eliminar (< 3 componentes): {p}"
     return True, ""
 
 
@@ -173,6 +191,10 @@ async def delete_file(path: str) -> dict:
         result incluye: path (str) con la ruta eliminada.
     """
     logger.debug(f"delete_file called with path={path!r}")
+
+    if not path or not path.strip():
+        return {"success": False, "result": None, "error": "Ruta de archivo vacía"}
+
     try:
         p = _expand(path)
 
@@ -216,6 +238,10 @@ async def create_file(path: str, content: str = "") -> dict:
         result incluye: path (str) con la ruta creada y size_bytes (int).
     """
     logger.debug(f"create_file called with path={path!r}")
+
+    if not path or not path.strip():
+        return {"success": False, "result": None, "error": "Ruta de archivo vacía"}
+
     try:
         p = _expand(path)
 
