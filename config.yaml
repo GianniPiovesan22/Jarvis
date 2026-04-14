@@ -1,0 +1,49 @@
+# config.yaml — Jarvis Assistant
+# Profile auto-detected by socket.gethostname()
+
+profiles:
+  pc_principal:
+    hostname: "cachyos-pc"
+    whisper_device: "rocm"
+    whisper_model: "medium"
+    ollama_model: "llama3.2:3b"
+
+  notebook:
+    hostname: "cachyos-notebook"
+    whisper_device: "cpu"
+    whisper_model: "small"
+    ollama_model: "llama3.2:1b"
+
+# Common to all profiles
+wake_word:
+  model_path: "models/hey_jarvis.onnx"
+  threshold: 0.7
+
+llm:
+  # Router word-count thresholds
+  simple_word_limit: 6
+  medium_word_limit: 20
+  # Ollama (local)
+  ollama_url: "http://localhost:11434"
+  # Claude API (cloud)
+  claude_haiku: "claude-haiku-4-5-20251001"
+  claude_sonnet: "claude-sonnet-4-6"
+  # Gemini (cloud, --force-gemini only)
+  gemini_model: "gemini-2.0-flash"
+  gemini_api_key_env: "GEMINI_API_KEY"
+  # Shared
+  max_tokens: 500
+  history_turns: 10
+
+tts:
+  voice: "es_ES-davefx-high"
+  speed: 1.1
+
+memory:
+  db_path: "memory/jarvis.db"
+  max_history_turns: 50
+
+ui:
+  position: "bottom-right"
+  orb_size: 88
+  opacity: 0.92

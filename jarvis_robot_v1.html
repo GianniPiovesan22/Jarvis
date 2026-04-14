@@ -1,0 +1,674 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<title>JARVIS — Robot Overlay</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Share+Tech+Mono&family=Orbitron:wght@600;900&display=swap');
+
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body {
+    background: #0d1117;
+    background-image:
+      linear-gradient(rgba(0,200,255,0.025) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(0,200,255,0.025) 1px, transparent 1px);
+    background-size: 40px 40px;
+    min-height: 100vh;
+    font-family: 'Share Tech Mono', monospace;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: #333;
+    font-size: 11px;
+    letter-spacing: 3px;
+  }
+
+  .hint { opacity: 0.2; }
+
+  /* ══════════════════════════════════════
+     OVERLAY CONTAINER
+  ══════════════════════════════════════ */
+  .jarvis-widget {
+    position: fixed;
+    bottom: 28px;
+    right: 28px;
+    display: flex;
+    flex-direction: column;
+    align-items: flex-end;
+    gap: 10px;
+    animation: widgetIn 0.5s cubic-bezier(0.16,1,0.3,1) forwards;
+    transform-origin: bottom right;
+  }
+
+  @keyframes widgetIn {
+    from { transform: scale(0.7) translateY(20px); opacity: 0; }
+    to   { transform: scale(1) translateY(0); opacity: 1; }
+  }
+
+  /* ── INFO BUBBLE (shows on active states) ── */
+  .info-bubble {
+    background: rgba(5,10,18,0.85);
+    backdrop-filter: blur(14px);
+    border: 1px solid rgba(0,200,255,0.15);
+    border-radius: 8px 8px 2px 8px;
+    padding: 10px 14px;
+    width: 240px;
+    position: relative;
+    transition: opacity 0.3s, transform 0.3s;
+  }
+
+  .info-bubble::before {
+    content: '';
+    position: absolute;
+    top: 0; left: 0; right: 0;
+    height: 1px;
+    background: linear-gradient(90deg, transparent, #00c8ff, #00ff99, transparent);
+    opacity: 0.6;
+    border-radius: 8px 8px 0 0;
+  }
+
+  /* Arrow pointing to orb */
+  .info-bubble::after {
+    content: '';
+    position: absolute;
+    bottom: -6px; right: 22px;
+    width: 10px; height: 10px;
+    background: rgba(5,10,18,0.85);
+    border-right: 1px solid rgba(0,200,255,0.15);
+    border-bottom: 1px solid rgba(0,200,255,0.15);
+    transform: rotate(45deg);
+  }
+
+  .bubble-transcript {
+    font-size: 10px;
+    color: #4a8a9a;
+    letter-spacing: 0.3px;
+    margin-bottom: 6px;
+    min-height: 14px;
+  }
+
+  .bubble-response {
+    font-size: 12px;
+    color: #c8e8f0;
+    line-height: 1.5;
+    letter-spacing: 0.2px;
+    min-height: 18px;
+  }
+
+  .blink {
+    display: inline-block;
+    width: 5px; height: 11px;
+    background: #00c8ff;
+    vertical-align: middle;
+    margin-left: 2px;
+    animation: bl 0.8s step-end infinite;
+  }
+  @keyframes bl { 0%,100%{opacity:0.8} 50%{opacity:0} }
+
+  .bubble-hidden { opacity: 0; pointer-events: none; transform: translateY(6px); }
+
+  /* ══════════════════════════════════════
+     THE ORB
+  ══════════════════════════════════════ */
+  .orb-wrap {
+    width: 88px; height: 88px;
+    position: relative;
+    cursor: pointer;
+  }
+
+  /* Canvas for WebGL-style face */
+  #orbCanvas {
+    width: 88px; height: 88px;
+    border-radius: 50%;
+  }
+
+  /* Outer glow ring */
+  .orb-glow {
+    position: absolute;
+    inset: -6px;
+    border-radius: 50%;
+    background: radial-gradient(circle, rgba(0,200,255,0.12) 0%, transparent 70%);
+    animation: glowPulse 2.5s ease-in-out infinite;
+    pointer-events: none;
+  }
+  @keyframes glowPulse {
+    0%,100% { opacity: 0.6; transform: scale(1); }
+    50%      { opacity: 1;   transform: scale(1.08); }
+  }
+
+  /* Rotating rings */
+  .ring {
+    position: absolute;
+    border-radius: 50%;
+    border: 1px solid rgba(0,200,255,0.25);
+    pointer-events: none;
+  }
+  .ring-1 {
+    inset: -14px;
+    border-color: rgba(0,200,255,0.2);
+    animation: spin1 6s linear infinite;
+  }
+  .ring-2 {
+    inset: -22px;
+    border-color: rgba(0,255,153,0.12);
+    border-style: dashed;
+    animation: spin2 10s linear infinite reverse;
+  }
+  .ring-3 {
+    inset: -30px;
+    border-color: rgba(0,200,255,0.07);
+    animation: spin1 18s linear infinite;
+  }
+
+  /* Ring dots */
+  .ring-1::before, .ring-2::before {
+    content: '';
+    position: absolute;
+    width: 5px; height: 5px;
+    border-radius: 50%;
+    top: 50%; left: -3px;
+    transform: translateY(-50%);
+  }
+  .ring-1::before {
+    background: #00c8ff;
+    box-shadow: 0 0 6px #00c8ff;
+  }
+  .ring-2::before {
+    background: #00ff99;
+    box-shadow: 0 0 5px #00ff99;
+    width: 4px; height: 4px;
+  }
+
+  @keyframes spin1 { from{transform:rotate(0deg)} to{transform:rotate(360deg)} }
+  @keyframes spin2 { from{transform:rotate(0deg)} to{transform:rotate(-360deg)} }
+
+  /* Status dot */
+  .status-pip {
+    position: absolute;
+    bottom: 4px; right: 4px;
+    width: 9px; height: 9px;
+    border-radius: 50%;
+    background: #00ff99;
+    box-shadow: 0 0 8px #00ff99;
+    border: 1.5px solid #0d1117;
+    transition: background 0.3s, box-shadow 0.3s;
+    z-index: 10;
+  }
+
+  /* Demo controls */
+  .demo-row {
+    position: fixed;
+    bottom: 24px;
+    left: 50%;
+    transform: translateX(-50%);
+    display: flex;
+    gap: 6px;
+  }
+  .db {
+    padding: 5px 14px;
+    background: rgba(0,0,0,0.5);
+    border: 1px solid rgba(0,200,255,0.2);
+    color: rgba(0,200,255,0.4);
+    font-family: 'Share Tech Mono', monospace;
+    font-size: 9px;
+    letter-spacing: 2px;
+    cursor: pointer;
+    border-radius: 3px;
+    transition: all 0.2s;
+  }
+  .db:hover, .db.on {
+    background: rgba(0,200,255,0.08);
+    border-color: rgba(0,200,255,0.5);
+    color: #00c8ff;
+  }
+</style>
+</head>
+<body>
+
+<div class="hint">← TU ESCRITORIO AQUÍ →</div>
+
+<div class="jarvis-widget" id="widget">
+
+  <!-- Info bubble -->
+  <div class="info-bubble bubble-hidden" id="bubble">
+    <div class="bubble-transcript" id="bTranscript">abrí Spotify</div>
+    <div class="bubble-response" id="bResponse">Spotify iniciado.<span class="blink"></span></div>
+  </div>
+
+  <!-- The orb -->
+  <div class="orb-wrap">
+    <div class="orb-glow"></div>
+    <div class="ring ring-3"></div>
+    <div class="ring ring-2"></div>
+    <div class="ring ring-1"></div>
+    <canvas id="orbCanvas" width="176" height="176"></canvas>
+    <div class="status-pip" id="pip"></div>
+  </div>
+
+</div>
+
+<!-- Demo -->
+<div class="demo-row">
+  <button class="db on"  onclick="setState('idle',this)">IDLE</button>
+  <button class="db"     onclick="setState('listening',this)">ESCUCHANDO</button>
+  <button class="db"     onclick="setState('processing',this)">PROCESANDO</button>
+  <button class="db"     onclick="setState('speaking',this)">HABLANDO</button>
+</div>
+
+<script>
+// ══════════════════════════════════════
+// ORB CANVAS RENDERER
+// Draws an Iron Man / JARVIS-style robotic face
+// ══════════════════════════════════════
+
+const canvas = document.getElementById('orbCanvas');
+const ctx = canvas.getContext('2d');
+const W = 176, H = 176, cx = W/2, cy = H/2, R = 82;
+
+let state = 'idle';
+let t = 0;
+let audioLevel = 0;      // 0..1 — drives mouth/glow
+let targetAudio = 0;
+let blinkT = 0;
+let nextBlink = 3000;
+let blinkState = 0;      // 0=open, 1=closing, 2=opening
+let blinkProgress = 0;
+
+// Colors
+const C = {
+  bg:       '#060c14',
+  faceBase: '#0a1826',
+  primary:  '#00c8ff',
+  green:    '#00ff99',
+  dim:      'rgba(0,200,255,0.18)',
+  dimg:     'rgba(0,255,153,0.15)',
+  metal1:   '#1a3040',
+  metal2:   '#0e2030',
+  glow:     'rgba(0,200,255,0.35)',
+};
+
+function lerp(a,b,t){ return a+(b-a)*t; }
+function easeInOut(t){ return t<0.5?2*t*t:1-Math.pow(-2*t+2,2)/2; }
+
+// ── DRAW FACE ──
+function draw() {
+  ctx.clearRect(0,0,W,H);
+
+  // Clip to circle
+  ctx.save();
+  ctx.beginPath();
+  ctx.arc(cx,cy,R,0,Math.PI*2);
+  ctx.clip();
+
+  // Background gradient
+  const bg = ctx.createRadialGradient(cx,cy-10,10,cx,cy,R);
+  bg.addColorStop(0, '#0e1e2e');
+  bg.addColorStop(1, '#040810');
+  ctx.fillStyle = bg;
+  ctx.fillRect(0,0,W,H);
+
+  // Subtle hex grid
+  drawHexGrid();
+
+  // Face panels (geometric iron man style)
+  drawFacePanels();
+
+  // Eyes
+  drawEyes();
+
+  // Mouth / audio visualizer
+  drawMouth();
+
+  // Forehead accent line
+  drawForehead();
+
+  // Overlay gradient (depth)
+  const ov = ctx.createRadialGradient(cx,cy,R*0.4,cx,cy,R);
+  ov.addColorStop(0, 'transparent');
+  ov.addColorStop(1, 'rgba(0,0,0,0.5)');
+  ctx.fillStyle = ov;
+  ctx.fillRect(0,0,W,H);
+
+  // Rim light
+  ctx.restore();
+  ctx.save();
+  ctx.beginPath();
+  ctx.arc(cx,cy,R,0,Math.PI*2);
+  ctx.strokeStyle = `rgba(0,200,255,${0.25 + audioLevel*0.4})`;
+  ctx.lineWidth = 1.5;
+  ctx.stroke();
+  ctx.restore();
+}
+
+function drawHexGrid() {
+  ctx.save();
+  ctx.globalAlpha = 0.06;
+  ctx.strokeStyle = '#00c8ff';
+  ctx.lineWidth = 0.5;
+  const s = 14;
+  for(let row=-1; row<14; row++) {
+    for(let col=-1; col<14; col++) {
+      const x = col*s*1.73 + (row%2)*s*0.866;
+      const y = row*s*1.5;
+      hexPath(ctx, x, y, s*0.9);
+      ctx.stroke();
+    }
+  }
+  ctx.restore();
+}
+
+function hexPath(ctx, x, y, r) {
+  ctx.beginPath();
+  for(let i=0;i<6;i++){
+    const a = Math.PI/180*(60*i-30);
+    i===0 ? ctx.moveTo(x+r*Math.cos(a),y+r*Math.sin(a))
+           : ctx.lineTo(x+r*Math.cos(a),y+r*Math.sin(a));
+  }
+  ctx.closePath();
+}
+
+function drawFacePanels() {
+  // Cheek plates
+  ctx.save();
+  ctx.globalAlpha = 0.5;
+
+  // Left cheek
+  ctx.beginPath();
+  ctx.moveTo(25,75); ctx.lineTo(60,65); ctx.lineTo(65,115); ctx.lineTo(28,120);
+  ctx.fillStyle = C.metal1;
+  ctx.fill();
+  ctx.strokeStyle = 'rgba(0,200,255,0.15)';
+  ctx.lineWidth = 0.8;
+  ctx.stroke();
+
+  // Right cheek
+  ctx.beginPath();
+  ctx.moveTo(151,75); ctx.lineTo(116,65); ctx.lineTo(111,115); ctx.lineTo(148,120);
+  ctx.fillStyle = C.metal1;
+  ctx.fill();
+  ctx.stroke();
+
+  // Chin plate
+  ctx.beginPath();
+  ctx.moveTo(55,120); ctx.lineTo(121,120); ctx.lineTo(115,148); ctx.lineTo(61,148);
+  ctx.fillStyle = C.metal2;
+  ctx.fill();
+  ctx.stroke();
+
+  // Nose bridge
+  ctx.beginPath();
+  ctx.moveTo(cx-8,72); ctx.lineTo(cx+8,72);
+  ctx.lineTo(cx+5,105); ctx.lineTo(cx-5,105);
+  ctx.fillStyle = '#0c1e2e';
+  ctx.fill();
+  ctx.stroke();
+
+  ctx.restore();
+}
+
+function drawForehead() {
+  ctx.save();
+
+  // Forehead panel
+  ctx.beginPath();
+  ctx.moveTo(42,45); ctx.lineTo(134,45); ctx.lineTo(128,70); ctx.lineTo(48,70);
+  ctx.fillStyle = C.metal2;
+  ctx.globalAlpha = 0.6;
+  ctx.fill();
+  ctx.strokeStyle = 'rgba(0,200,255,0.2)';
+  ctx.lineWidth = 0.8;
+  ctx.stroke();
+
+  // Central accent line
+  ctx.globalAlpha = 0.8;
+  ctx.beginPath();
+  ctx.moveTo(cx-20, 52); ctx.lineTo(cx+20, 52);
+  ctx.strokeStyle = C.primary;
+  ctx.lineWidth = 1.5;
+  ctx.shadowColor = C.primary;
+  ctx.shadowBlur = 6;
+  ctx.stroke();
+
+  // Small pip dots
+  [-28, -10, 10, 28].forEach(ox => {
+    ctx.beginPath();
+    ctx.arc(cx+ox, 60, 1.5, 0, Math.PI*2);
+    ctx.fillStyle = C.primary;
+    ctx.globalAlpha = 0.5;
+    ctx.shadowBlur = 4;
+    ctx.fill();
+  });
+
+  ctx.restore();
+}
+
+function drawEyes() {
+  const eyeY = 90;
+  const leftX = cx - 28, rightX = cx + 28;
+  const eyeW = 22, eyeH = 10;
+
+  // Blink scale
+  let scaleY = 1;
+  if(blinkState === 1) scaleY = 1 - easeInOut(blinkProgress);
+  if(blinkState === 2) scaleY = easeInOut(blinkProgress);
+
+  const isIdle = state === 'idle';
+  const alpha = isIdle ? 0.4 : 1;
+  const col = state === 'speaking' ? C.green : C.primary;
+
+  [leftX, rightX].forEach(ex => {
+    ctx.save();
+    ctx.translate(ex, eyeY);
+    ctx.scale(1, scaleY);
+
+    // Eye socket
+    ctx.beginPath();
+    ctx.ellipse(0, 0, eyeW+3, eyeH+4, 0, 0, Math.PI*2);
+    ctx.fillStyle = '#020810';
+    ctx.fill();
+
+    // Eye glow fill
+    const eg = ctx.createRadialGradient(0,0,1,0,0,eyeW);
+    eg.addColorStop(0, col.replace(')',', 0.5)').replace('rgb','rgba').replace('#00c8ff','rgba(0,200,255,0.5)').replace('#00ff99','rgba(0,255,153,0.5)'));
+    eg.addColorStop(1, 'transparent');
+
+    ctx.beginPath();
+    ctx.ellipse(0, 0, eyeW, eyeH, 0, 0, Math.PI*2);
+    ctx.globalAlpha = alpha * (0.7 + audioLevel * 0.3);
+    ctx.fillStyle = col === C.primary ? 'rgba(0,200,255,0.15)' : 'rgba(0,255,153,0.15)';
+    ctx.fill();
+
+    // Main eye shape
+    ctx.beginPath();
+    ctx.ellipse(0, 0, eyeW, eyeH * scaleY === 0 ? 0.1 : eyeH, 0, 0, Math.PI*2);
+    ctx.strokeStyle = col;
+    ctx.lineWidth = 1.5;
+    ctx.globalAlpha = alpha;
+    ctx.shadowColor = col;
+    ctx.shadowBlur = isIdle ? 4 : 12 + audioLevel * 8;
+    ctx.stroke();
+
+    // Inner highlight
+    ctx.beginPath();
+    ctx.ellipse(0, -1, eyeW*0.5, eyeH*0.35, 0, Math.PI, Math.PI*2);
+    ctx.strokeStyle = col;
+    ctx.lineWidth = 1;
+    ctx.globalAlpha = alpha * 0.4;
+    ctx.shadowBlur = 0;
+    ctx.stroke();
+
+    // Pupil dot
+    ctx.beginPath();
+    ctx.arc(0, 0, 3, 0, Math.PI*2);
+    ctx.fillStyle = col;
+    ctx.globalAlpha = alpha * (0.8 + audioLevel * 0.2);
+    ctx.shadowColor = col;
+    ctx.shadowBlur = 8;
+    ctx.fill();
+
+    ctx.restore();
+  });
+}
+
+function drawMouth() {
+  const my = 128;
+  const isIdle = state === 'idle';
+
+  if(isIdle) {
+    // Flat line when idle
+    ctx.save();
+    ctx.beginPath();
+    ctx.moveTo(cx-20, my); ctx.lineTo(cx+20, my);
+    ctx.strokeStyle = C.primary;
+    ctx.lineWidth = 1;
+    ctx.globalAlpha = 0.2;
+    ctx.stroke();
+    ctx.restore();
+    return;
+  }
+
+  ctx.save();
+  ctx.globalAlpha = 0.9;
+
+  if(state === 'speaking') {
+    // Animated equalizer bars when speaking
+    const bars = 9;
+    const bw = 3, gap = 3;
+    const totalW = bars*(bw+gap)-gap;
+    const startX = cx - totalW/2;
+    for(let i=0; i<bars; i++) {
+      const bx = startX + i*(bw+gap);
+      const phase = t*0.003 + i*0.6;
+      const bh = (Math.sin(phase)*0.5+0.5) * 12 * (0.4 + audioLevel*0.6) + 3;
+      ctx.beginPath();
+      ctx.roundRect(bx, my - bh/2, bw, bh, 1);
+      ctx.fillStyle = C.green;
+      ctx.shadowColor = C.green;
+      ctx.shadowBlur = 6;
+      ctx.fill();
+    }
+  } else if(state === 'listening') {
+    // Wave line when listening
+    ctx.beginPath();
+    const pts = 30;
+    for(let i=0; i<=pts; i++) {
+      const x = cx - 26 + (52/pts)*i;
+      const phase = t*0.004 + i*0.4;
+      const y = my + Math.sin(phase) * (3 + audioLevel*8);
+      i===0 ? ctx.moveTo(x,y) : ctx.lineTo(x,y);
+    }
+    ctx.strokeStyle = C.primary;
+    ctx.lineWidth = 1.5;
+    ctx.shadowColor = C.primary;
+    ctx.shadowBlur = 8;
+    ctx.stroke();
+  } else {
+    // Processing — scanning line
+    const scanX = cx - 26 + ((t*0.05) % 52);
+    ctx.beginPath();
+    ctx.moveTo(cx-26, my); ctx.lineTo(cx+26, my);
+    ctx.strokeStyle = C.dim;
+    ctx.lineWidth = 1;
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.moveTo(scanX-4, my); ctx.lineTo(scanX+4, my);
+    ctx.strokeStyle = C.primary;
+    ctx.lineWidth = 2;
+    ctx.shadowColor = C.primary;
+    ctx.shadowBlur = 8;
+    ctx.stroke();
+  }
+
+  ctx.restore();
+}
+
+// ══════════════════════════════════════
+// ANIMATION LOOP
+// ══════════════════════════════════════
+let lastTime = 0;
+function loop(ts) {
+  const dt = ts - lastTime;
+  lastTime = ts;
+  t += dt;
+
+  // Smooth audio level
+  const targetMap = { idle: 0, listening: 0.5 + Math.sin(t*0.003)*0.4, processing: 0.2, speaking: 0.4 + Math.sin(t*0.005)*0.5 };
+  targetAudio = targetMap[state] || 0;
+  audioLevel = lerp(audioLevel, targetAudio, 0.08);
+
+  // Blink logic
+  if(state !== 'processing') {
+    blinkT += dt;
+    if(blinkState === 0 && blinkT > nextBlink) {
+      blinkState = 1; blinkProgress = 0; blinkT = 0;
+    }
+    if(blinkState === 1) {
+      blinkProgress += dt/80;
+      if(blinkProgress >= 1) { blinkState = 2; blinkProgress = 0; }
+    }
+    if(blinkState === 2) {
+      blinkProgress += dt/80;
+      if(blinkProgress >= 1) {
+        blinkState = 0; blinkProgress = 0;
+        nextBlink = 2000 + Math.random()*4000;
+      }
+    }
+  }
+
+  draw();
+  requestAnimationFrame(loop);
+}
+requestAnimationFrame(loop);
+
+// ══════════════════════════════════════
+// STATE MANAGEMENT
+// ══════════════════════════════════════
+const stateData = {
+  idle: {
+    pip: ['#2a4050','transparent'],
+    bubble: false,
+  },
+  listening: {
+    pip: ['#00ff99','#00ff99'],
+    bubble: true,
+    transcript: '"abrí Spotify"',
+    response: 'Escuchando···'
+  },
+  processing: {
+    pip: ['#00c8ff','#00c8ff'],
+    bubble: true,
+    transcript: '"bajá el volumen al 40%"',
+    response: 'Procesando···'
+  },
+  speaking: {
+    pip: ['#ffaa44','#ffaa44'],
+    bubble: true,
+    transcript: '"qué hora es"',
+    response: 'Son las 14:32, Gianni.'
+  }
+};
+
+function setState(s, btn) {
+  state = s;
+  document.querySelectorAll('.db').forEach(b=>b.classList.remove('on'));
+  btn.classList.add('on');
+
+  const d = stateData[s];
+  const pip = document.getElementById('pip');
+  pip.style.background = d.pip[0];
+  pip.style.boxShadow = d.pip[1] === 'transparent' ? 'none' : `0 0 8px ${d.pip[1]}`;
+
+  const bubble = document.getElementById('bubble');
+  if(d.bubble) {
+    bubble.classList.remove('bubble-hidden');
+    document.getElementById('bTranscript').textContent = d.transcript;
+    document.getElementById('bResponse').innerHTML =
+      d.response + (s==='speaking' ? '<span class="blink"></span>' : '');
+  } else {
+    bubble.classList.add('bubble-hidden');
+  }
+}
+</script>
+</body>
+</html>

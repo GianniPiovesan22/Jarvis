@@ -1,0 +1,38 @@
+# Fixture config for tests — uses a hostname that won't match any real machine
+# so we always exercise the "no profile match" code path by default.
+# Tests that need a profile can patch socket.gethostname().
+
+profiles:
+  test_pc:
+    hostname: "jarvis-test-host"
+    whisper_device: "cpu"
+    whisper_model: "tiny"
+    ollama_model: "llama3.2:1b"
+
+wake_word:
+  model_path: "models/hey_jarvis.onnx"
+  threshold: 0.7
+
+llm:
+  simple_word_limit: 6
+  medium_word_limit: 20
+  ollama_url: "http://localhost:11434"
+  claude_haiku: "claude-haiku-4-5-20251001"
+  claude_sonnet: "claude-sonnet-4-6"
+  gemini_model: "gemini-2.0-flash"
+  gemini_api_key_env: "GEMINI_API_KEY"
+  max_tokens: 500
+  history_turns: 10
+
+tts:
+  voice: "es_ES-davefx-high"
+  speed: 1.1
+
+memory:
+  db_path: "memory/test.db"
+  max_history_turns: 50
+
+ui:
+  position: "bottom-right"
+  orb_size: 88
+  opacity: 0.92
