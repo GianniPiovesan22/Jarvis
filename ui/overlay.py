@@ -734,7 +734,7 @@ class InfoBubble(QWidget):
     def set_transcript(self, text: str) -> None:
         self._transcript = text
         self._transcript_label.setText(text)
-        self.adjustSize()
+        pass  # fixed size — no adjust
 
     def set_response(self, text: str, typewriter: bool = True) -> None:
         self._response_full = text
@@ -747,7 +747,7 @@ class InfoBubble(QWidget):
             self._response_visible = text
             self._response_label.setText(text)
             self._tw_timer.stop()
-        self.adjustSize()
+        pass  # fixed size — no adjust
 
     @pyqtSlot()
     def _typewriter_tick(self) -> None:
@@ -759,7 +759,7 @@ class InfoBubble(QWidget):
             self._response_label.setText(self._response_full)
             self._tw_timer.stop()
             self._typewriter_active = False
-        self.adjustSize()
+        pass  # fixed size — no adjust
 
     def paintEvent(self, _event) -> None:  # type: ignore[override]
         p = QPainter(self)
@@ -873,21 +873,25 @@ class JarvisOverlay(QWidget):
         self.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
 
     def _build_ui(self) -> None:
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(10)
-        layout.setAlignment(Qt.AlignmentFlag.AlignRight)
+        orb_size = self._config.orb_size
+        orb_total = orb_size + 60  # extra space for rings
+        widget_w = max(orb_total, 240)  # wide enough for bubble
+        bubble_h = 80
+        widget_h = bubble_h + 10 + orb_total
 
-        # Info bubble (above the orb)
+        # Fixed size — no layout expansion
+        self.setFixedSize(widget_w, widget_h)
+
+        # Info bubble (above the orb) — positioned manually, no layout
         self._bubble = InfoBubble(self)
-        layout.addWidget(self._bubble, alignment=Qt.AlignmentFlag.AlignRight)
+        self._bubble.move(widget_w - 240, 0)
+        self._bubble.setVisible(False)
 
         # Orb container (orb + status pip)
         orb_container = QWidget(self)
         orb_container.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
-        orb_size = self._config.orb_size
-        orb_total = orb_size + 60
         orb_container.setFixedSize(orb_total, orb_total)
+        orb_container.move(widget_w - orb_total, bubble_h + 10)
 
         # The orb itself
         self._orb = OrbWidget(orb_size, orb_container)
@@ -895,11 +899,8 @@ class JarvisOverlay(QWidget):
 
         # Status pip — bottom-right of the orb circle area
         self._pip = StatusPip(orb_container)
-        pip_offset = orb_total // 2 + int(orb_size * 0.45)  # near edge of orb
+        pip_offset = orb_total // 2 + int(orb_size * 0.45)
         self._pip.move(pip_offset - 4, pip_offset - 4)
-
-        layout.addWidget(orb_container, alignment=Qt.AlignmentFlag.AlignRight)
-        self.adjustSize()
 
     def _connect_signals(self) -> None:
         self.state_changed.connect(self._on_state_changed)
@@ -1007,13 +1008,13 @@ class JarvisOverlay(QWidget):
     def _on_transcription(self, text: str) -> None:
         self._bubble.set_transcript(text)
         self._bubble.setVisible(True)
-        self.adjustSize()
+        pass  # fixed size — no adjust
 
     @pyqtSlot(str)
     def _on_response(self, text: str) -> None:
         self._bubble.set_response(text, typewriter=True)
         self._bubble.setVisible(True)
-        self.adjustSize()
+        pass  # fixed size — no adjust
 
 
 # ---------------------------------------------------------------------------
